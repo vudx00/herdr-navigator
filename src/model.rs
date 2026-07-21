@@ -1,10 +1,10 @@
-use std::path::PathBuf;
+use std::{cell::OnceCell, path::PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 use crate::paths::canonical_str;
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Source {
     Workspace,
     Project,
@@ -32,24 +32,58 @@ impl Source {
         }
     }
 
+    /// Allocation-free: runs for every `source_order` entry on every filter pass.
     pub(crate) fn from_config(value: &str) -> Option<Self> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "workspace" | "workspaces" | "open" | "open_workspaces" => Some(Source::Workspace),
-            "project" | "projects" | "herdr_plus_projects" => Some(Source::Project),
-            "zoxide" | "z" => Some(Source::Zoxide),
-            "root" | "roots" | "scan" => Some(Source::Root),
-            "agent" | "agents" => Some(Source::Agent),
-            "server" | "servers" | "remote" | "remotes" | "ssh" => Some(Source::Server),
-            "session" | "sessions" => Some(Source::Session),
-            "quick" | "quick_action" | "quick_actions" | "herdr_plus_quick_actions" => {
-                Some(Source::QuickAction)
-            }
-            "plugin" | "integration" | "integrations" => Some(Source::Integration),
-            _ => None,
-        }
+        const ALIASES: &[(Source, &[&str])] = &[
+            (
+                Source::Workspace,
+                &["workspace", "workspaces", "open", "open_workspaces"],
+            ),
+            (
+                Source::Project,
+                &["project", "projects", "herdr_plus_projects"],
+            ),
+            (Source::Zoxide, &["zoxide", "z"]),
+            (Source::Root, &["root", "roots", "scan"]),
+            (Source::Agent, &["agent", "agents"]),
+            (
+                Source::Server,
+                &["server", "servers", "remote", "remotes", "ssh"],
+            ),
+            (Source::Session, &["session", "sessions"]),
+            (
+                Source::QuickAction,
+                &[
+                    "quick",
+                    "quick_action",
+                    "quick_actions",
+                    "herdr_plus_quick_actions",
+                ],
+            ),
+            (
+                Source::Integration,
+                &["plugin", "integration", "integrations"],
+            ),
+        ];
+        let value = value.trim();
+        ALIASES
+            .iter()
+            .find(|(_, aliases)| {
+                aliases
+                    .iter()
+                    .any(|alias| value.eq_ignore_ascii_case(alias))
+            })
+            .map(|(source, _)| *source)
     }
 
-    pub(crate) fn all() -> [Source; 9] {
+    pub(crate) const COUNT: usize = 9;
+
+    /// Dense index for per-source lookup tables.
+    pub(crate) const fn index(self) -> usize {
+        self as usize
+    }
+
+    pub(crate) fn all() -> [Source; Self::COUNT] {
         [
             Source::Workspace,
             Source::Project,
@@ -63,6 +97,9 @@ impl Source {
         ]
     }
 }
+
+// A new variant would index past every `[_; Source::COUNT]` lookup table.
+const _: () = assert!(Source::Integration.index() + 1 == Source::COUNT);
 
 #[derive(Clone, Debug)]
 pub(crate) enum EntryAction {
@@ -122,11 +159,16 @@ pub(crate) struct Entry {
     pub(crate) action: EntryAction,
     pub(crate) source_label: Option<String>,
     pub(crate) search_terms: Vec<String>,
+    /// Memoized [`Entry::key`]: canonicalizing hits the filesystem, and the key
+    /// is read once per row per frame plus once per filter pass.
+    pub(crate) canonical_key: OnceCell<String>,
 }
 
 impl Entry {
-    pub(crate) fn key(&self) -> String {
-        canonical_str(&self.path).unwrap_or_else(|| self.path.display().to_string())
+    pub(crate) fn key(&self) -> &str {
+        self.canonical_key.get_or_init(|| {
+            canonical_str(&self.path).unwrap_or_else(|| self.path.display().to_string())
+        })
     }
 
     pub(crate) fn source_name(&self) -> &str {

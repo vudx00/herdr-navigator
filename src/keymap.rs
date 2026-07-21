@@ -103,7 +103,7 @@ impl Keybind {
                 .is_some_and(|entry| app.is_pinned(entry)),
             Command::TogglePreview => app.preview,
             Command::ToggleHelp => app.input_mode == InputMode::Help,
-            Command::Filter(source) => app.source_filter.as_ref() == Some(source),
+            Command::Filter(source) => app.source_filter == Some(*source),
             _ => false,
         }
     }
@@ -210,11 +210,11 @@ pub(crate) fn keybindings(app: &App) -> Vec<Keybind> {
     ];
 
     for source in Source::all() {
-        let Some(filter_key) = app.config.picker.filter_key(&source) else {
+        let Some(filter_key) = app.config.picker.filter_key(source) else {
             continue;
         };
         bindings.push(binding(
-            Command::Filter(source.clone()),
+            Command::Filter(source),
             vec![
                 key(
                     KeyCode::Char(filter_key),
@@ -223,9 +223,9 @@ pub(crate) fn keybindings(app: &App) -> Vec<Keybind> {
                 ),
                 vim_key(KeyCode::Char(filter_key), filter_key.to_string()),
             ],
-            source_help_label(&source),
+            source_help_label(source),
             "Filters",
-            Some(source_compact_label(&source)),
+            Some(source.label()),
         ));
     }
 
@@ -322,7 +322,7 @@ pub(crate) fn keybindings(app: &App) -> Vec<Keybind> {
     bindings
 }
 
-fn source_help_label(source: &Source) -> &'static str {
+fn source_help_label(source: Source) -> &'static str {
     match source {
         Source::Workspace => "workspaces",
         Source::Project => "projects",
@@ -333,19 +333,5 @@ fn source_help_label(source: &Source) -> &'static str {
         Source::Session => "sessions",
         Source::QuickAction => "quick actions",
         Source::Integration => "plugins",
-    }
-}
-
-fn source_compact_label(source: &Source) -> &'static str {
-    match source {
-        Source::Workspace => "open",
-        Source::Project => "project",
-        Source::Zoxide => "zoxide",
-        Source::Root => "root",
-        Source::Agent => "agent",
-        Source::Server => "server",
-        Source::Session => "session",
-        Source::QuickAction => "quick",
-        Source::Integration => "plugin",
     }
 }

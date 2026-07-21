@@ -1,4 +1,5 @@
 use std::{
+    cell::OnceCell,
     env, fs,
     path::{Path, PathBuf},
 };
@@ -38,6 +39,7 @@ pub(crate) fn collect_projects() -> Vec<Entry> {
             action: EntryAction::OpenProject,
             source_label: None,
             search_terms: vec![],
+            canonical_key: OnceCell::new(),
         });
     }
     out
@@ -83,6 +85,7 @@ pub(crate) fn quick_actions_entry() -> Entry {
         },
         source_label: None,
         search_terms: vec![],
+        canonical_key: OnceCell::new(),
     }
 }
 

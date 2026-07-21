@@ -1,8 +1,10 @@
 use std::{
+    cell::OnceCell,
     collections::{HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
     process::Command,
+    thread,
 };
 
 use serde_json::Value;
@@ -15,8 +17,12 @@ use crate::{
 };
 
 pub(crate) fn collect_workspaces() -> (Vec<Entry>, HashMap<String, Vec<WorkspaceRef>>) {
-    let ws_json = herdr_json(["workspace", "list"]).unwrap_or(Value::Null);
-    let pane_json = herdr_json(["pane", "list"]).unwrap_or(Value::Null);
+    // Two independent `herdr` round trips; overlap them.
+    let (ws_json, pane_json) = thread::scope(|scope| {
+        let panes = scope.spawn(|| herdr_json(["pane", "list"]).unwrap_or(Value::Null));
+        let workspaces = herdr_json(["workspace", "list"]).unwrap_or(Value::Null);
+        (workspaces, panes.join().unwrap_or(Value::Null))
+    });
     let mut cwd_by_ws: HashMap<String, String> = HashMap::new();
     if let Some(panes) = pane_json
         .pointer("/result/panes")
@@ -94,6 +100,7 @@ fn workspaces_from_json(
                 action: EntryAction::FocusWorkspace { id: id.into() },
                 source_label: None,
                 search_terms,
+                canonical_key: OnceCell::new(),
             });
         }
     }
@@ -111,15 +118,11 @@ fn workspace_kind(label: &str) -> WorkspaceKind {
     }
 }
 
-pub(crate) fn collect_agents(
-    workspaces: &[Entry],
-    aliases: &[crate::config::AgentAliasConfig],
-) -> Vec<Entry> {
-    let agent_json = herdr_json(["agent", "list"]).unwrap_or(Value::Null);
-    agents_from_json(&agent_json, workspaces, aliases)
+pub(crate) fn fetch_agents() -> Value {
+    herdr_json(["agent", "list"]).unwrap_or(Value::Null)
 }
 
-fn agents_from_json(
+pub(crate) fn agents_from_json(
     agent_json: &Value,
     workspaces: &[Entry],
     aliases: &[crate::config::AgentAliasConfig],
@@ -196,6 +199,7 @@ fn agents_from_json(
                 },
                 source_label: None,
                 search_terms,
+                canonical_key: OnceCell::new(),
             });
         }
     }
@@ -265,6 +269,7 @@ pub(crate) fn collect_zoxide() -> Vec<Entry> {
                 action: EntryAction::FocusOrCreateDir,
                 source_label: None,
                 search_terms: vec![],
+                canonical_key: OnceCell::new(),
             }
         })
         .collect()
@@ -317,6 +322,7 @@ fn walk_dirs(
             action: EntryAction::FocusOrCreateDir,
             source_label: None,
             search_terms: vec![],
+            canonical_key: OnceCell::new(),
         });
     }
     if let Ok(read) = fs::read_dir(path) {

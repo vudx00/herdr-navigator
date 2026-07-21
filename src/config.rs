@@ -233,7 +233,7 @@ fn default_directory_template_key() -> String {
 fn default_notification_sound() -> String {
     "default".into()
 }
-fn default_filter_key(source: &Source) -> Option<char> {
+fn default_filter_key(source: Source) -> Option<char> {
     match source {
         Source::Agent => Some('a'),
         Source::Server => Some('s'),
@@ -250,7 +250,7 @@ fn default_filter_key(source: &Source) -> Option<char> {
 fn default_filter_keys() -> Vec<(Source, char)> {
     Source::all()
         .into_iter()
-        .filter_map(|source| default_filter_key(&source).map(|key| (source, key)))
+        .filter_map(|source| default_filter_key(source).map(|key| (source, key)))
         .collect()
 }
 
@@ -290,13 +290,13 @@ impl Default for PickerConfig {
 }
 
 impl PickerConfig {
-    pub(crate) fn filter_key(&self, source: &Source) -> Option<char> {
+    pub(crate) fn filter_key(&self, source: Source) -> Option<char> {
         let key = self
             .custom_filter_keys()
             .into_iter()
-            .find_map(|(custom_source, key)| (custom_source == *source).then_some(key))
+            .find_map(|(custom_source, key)| (custom_source == source).then_some(key))
             .or_else(|| default_filter_key(source))?;
-        (self.filter_source_for_key(key).as_ref() == Some(source)).then_some(key)
+        (self.filter_source_for_key(key) == Some(source)).then_some(key)
     }
 
     pub(crate) fn filter_source_for_key(&self, key: char) -> Option<Source> {
@@ -305,7 +305,7 @@ impl PickerConfig {
         custom
             .iter()
             .find(|(_, custom_key)| *custom_key == key)
-            .map(|(source, _)| source.clone())
+            .map(|(source, _)| *source)
             .or_else(|| {
                 default_filter_keys()
                     .into_iter()
@@ -323,18 +323,24 @@ impl PickerConfig {
             .collect()
     }
 
-    pub(crate) fn source_rank(&self, source: &Source) -> usize {
-        self.source_order
+    /// Resolved once per filter pass, not per candidate: `source_order` holds
+    /// config aliases, so each lookup is a string scan.
+    pub(crate) fn source_ranks(&self) -> [usize; Source::COUNT] {
+        let mut ranks = [Source::COUNT; Source::COUNT];
+        for (rank, source) in self
+            .source_order
             .iter()
             .filter_map(|name| Source::from_config(name))
-            .position(|item| &item == source)
-            .unwrap_or_else(|| Source::all().len())
+            .enumerate()
+        {
+            let slot = &mut ranks[source.index()];
+            *slot = (*slot).min(rank);
+        }
+        ranks
     }
 
-    pub(crate) fn source_bonus(&self, source: &Source) -> i64 {
-        let rank = self.source_rank(source) as i64;
-        let total = Source::all().len() as i64;
-        (total - rank).max(0) * self.source_priority_boost
+    pub(crate) fn bonus_for_rank(&self, rank: usize) -> i64 {
+        (Source::COUNT as i64 - rank as i64).max(0) * self.source_priority_boost
     }
 }
 impl Default for JumpBackConfig {
@@ -483,13 +489,24 @@ mod tests {
     #[test]
     fn default_source_order_prioritizes_open_workspaces_then_agents() {
         let picker = PickerConfig::default();
+        let ranks = picker.source_ranks();
+        let rank = |source: Source| ranks[source.index()];
 
-        assert_eq!(picker.source_rank(&Source::Workspace), 0);
-        assert_eq!(picker.source_rank(&Source::Agent), 1);
-        assert_eq!(picker.source_rank(&Source::Session), 3);
-        assert_eq!(picker.source_rank(&Source::Root), 5);
-        assert_eq!(picker.source_rank(&Source::Server), 6);
-        assert!(picker.source_bonus(&Source::Root) > picker.source_bonus(&Source::Server));
+        assert_eq!(rank(Source::Workspace), 0);
+        assert_eq!(rank(Source::Agent), 1);
+        assert_eq!(rank(Source::Session), 3);
+        assert_eq!(rank(Source::Root), 5);
+        assert_eq!(rank(Source::Server), 6);
+        assert!(
+            picker.bonus_for_rank(rank(Source::Root)) > picker.bonus_for_rank(rank(Source::Server))
+        );
+
+        let unlisted = PickerConfig {
+            source_order: vec!["agent".into()],
+            ..PickerConfig::default()
+        };
+        assert_eq!(unlisted.source_ranks()[Source::Root.index()], Source::COUNT);
+        assert_eq!(unlisted.bonus_for_rank(Source::COUNT), 0);
     }
 
     #[test]
@@ -675,7 +692,7 @@ mod tests {
             config.picker.filter_source_for_key('a'),
             Some(Source::Agent)
         );
-        assert_eq!(config.picker.filter_key(&Source::Server), Some('g'));
+        assert_eq!(config.picker.filter_key(Source::Server), Some('g'));
     }
 
     #[test]

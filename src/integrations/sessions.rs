@@ -1,4 +1,4 @@
-use std::{env, path::PathBuf, process::Command};
+use std::{cell::OnceCell, env, path::PathBuf, process::Command};
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -94,6 +94,7 @@ fn local_session_entry(session: ListedSession) -> Entry {
         },
         source_label: None,
         search_terms: vec!["local".into(), "session".into()],
+        canonical_key: OnceCell::new(),
     }
 }
 
@@ -117,6 +118,7 @@ fn manual_session_entry(config: &SessionEntryConfig) -> Entry {
         },
         source_label: None,
         search_terms,
+        canonical_key: OnceCell::new(),
     }
 }
 
@@ -136,6 +138,7 @@ fn remote_entry(config: &SessionEntryConfig) -> Option<Entry> {
         action: EntryAction::OpenRemote { target },
         source_label: None,
         search_terms,
+        canonical_key: OnceCell::new(),
     })
 }
 

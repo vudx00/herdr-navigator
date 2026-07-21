@@ -900,7 +900,7 @@ fn source_color(theme: &Theme, source: &Source) -> Color {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::{cell::OnceCell, path::PathBuf};
 
     use crossterm::event::KeyModifiers;
     use ratatui::backend::TestBackend;
@@ -925,6 +925,7 @@ mod tests {
             action: EntryAction::FocusOrCreateDir,
             source_label: None,
             search_terms: vec![],
+            canonical_key: OnceCell::new(),
         }
     }
 

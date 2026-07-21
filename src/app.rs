@@ -2,6 +2,7 @@ use std::{
     collections::{HashMap, HashSet},
     env, fs,
     path::Path,
+    thread,
     time::{Duration, Instant},
 };
 
@@ -12,7 +13,7 @@ use crate::{
     matcher::SearchMatcher,
     model::{Entry, EntryAction, Source, WorkspaceKind, WorkspaceRef},
     paths::{canonical_str, herdr_plus_quick_actions_dir, home, plugin_config_dir},
-    sources::{collect_agents, collect_roots, collect_workspaces, collect_zoxide},
+    sources::{agents_from_json, collect_roots, collect_workspaces, collect_zoxide, fetch_agents},
     theme::Theme,
 };
 
@@ -21,6 +22,74 @@ pub(crate) enum InputMode {
     Normal,
     Search,
     Help,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AgentSort {
+    /// Surface agents that need attention first.
+    Priority,
+    /// Keep Herdr's own agent panel ordering.
+    Spaces,
+}
+
+impl AgentSort {
+    /// Resolved once per run: the fallback parses Herdr's config from disk.
+    fn resolve(configured: &str) -> Self {
+        match configured.trim().to_ascii_lowercase().as_str() {
+            "priority" => Self::Priority,
+            "spaces" => Self::Spaces,
+            _ => Self::from_herdr_config(),
+        }
+    }
+
+    fn from_herdr_config() -> Self {
+        let path = env::var("XDG_CONFIG_HOME")
+            .map(|xdg| Path::new(&xdg).join("herdr/config.toml"))
+            .unwrap_or_else(|_| home().join(".config/herdr/config.toml"));
+        let configured = fs::read_to_string(path)
+            .ok()
+            .and_then(|source| source.parse::<toml::Value>().ok())
+            .and_then(|value| {
+                value
+                    .get("ui")
+                    .and_then(toml::Value::as_table)
+                    .and_then(|ui| ui.get("agent_panel_sort"))
+                    .or_else(|| value.get("agent_panel_sort"))
+                    .and_then(toml::Value::as_str)
+                    .map(str::to_ascii_lowercase)
+            });
+        match configured.as_deref() {
+            Some("priority") => Self::Priority,
+            _ => Self::Spaces,
+        }
+    }
+}
+
+/// Raw output of one concurrent [`App::refresh`] collection pass.
+struct Collected {
+    workspaces: (Vec<Entry>, HashMap<String, Vec<WorkspaceRef>>),
+    projects: Vec<Entry>,
+    zoxide: Vec<Entry>,
+    roots: Vec<Entry>,
+    remotes: Vec<Entry>,
+    sessions: Vec<Entry>,
+    agents: serde_json::Value,
+    integrations: Vec<Entry>,
+}
+
+/// Disabled or panicking collectors degrade to no entries.
+fn joined<T: Default>(handle: Option<thread::ScopedJoinHandle<'_, T>>) -> T {
+    handle.map_or_else(T::default, |handle| handle.join().unwrap_or_default())
+}
+
+/// Sort inputs resolved once per row: deriving them inside the comparator
+/// instead costs `O(n log n)` mark and rank lookups per keystroke.
+struct Candidate {
+    index: usize,
+    score: i64,
+    source_rank: usize,
+    previous_pinned: bool,
+    user_pinned: bool,
 }
 
 pub(crate) struct App {
@@ -41,12 +110,15 @@ pub(crate) struct App {
     pub(crate) pinned_entries: HashSet<String>,
     pub(crate) spinner_tick: u32,
     pub(crate) update_available: Option<String>,
+    pub(crate) agent_sort: AgentSort,
 }
 
 impl App {
     pub(crate) fn new(config: Config, theme: Theme) -> Self {
         let preview = config.picker.preview;
+        let agent_sort = AgentSort::resolve(&config.picker.agent_sort);
         Self {
+            agent_sort,
             config,
             theme,
             entries: vec![],
@@ -69,50 +141,70 @@ impl App {
 
     pub(crate) fn refresh(&mut self) {
         let selected_key = self.selected_entry().map(pin_key);
+        let cache_ttl = Duration::from_secs(self.config.picker.root_cache_seconds);
+        let cached_roots = self
+            .root_cache
+            .as_ref()
+            .filter(|(created, _)| !cache_ttl.is_zero() && created.elapsed() <= cache_ttl)
+            .map(|(_, entries)| entries.clone());
+
+        // Collectors each shell out or walk the filesystem: overlap them so
+        // startup costs the slowest one, not their sum.
+        let config = &self.config;
+        let sources = &config.sources;
+        let collected = thread::scope(|scope| {
+            let workspaces = scope.spawn(collect_workspaces);
+            let projects = sources
+                .herdr_plus_projects
+                .then(|| scope.spawn(herdr_plus::collect_projects));
+            let zoxide = sources.zoxide.then(|| scope.spawn(collect_zoxide));
+            let roots = (sources.roots && cached_roots.is_none())
+                .then(|| scope.spawn(|| collect_roots(config)));
+            let remotes = sources
+                .servers
+                .then(|| scope.spawn(|| sessions::collect_remotes(config)));
+            let session_entries = sources
+                .sessions
+                .then(|| scope.spawn(|| sessions::collect_sessions(config)));
+            let agents = sources.agents.then(|| scope.spawn(fetch_agents));
+            let integrations = scope.spawn(|| command::collect(&config.integrations));
+            Collected {
+                workspaces: workspaces.join().unwrap_or_default(),
+                projects: joined(projects),
+                zoxide: joined(zoxide),
+                roots: joined(roots),
+                remotes: joined(remotes),
+                sessions: joined(session_entries),
+                agents: joined(agents),
+                integrations: integrations.join().unwrap_or_default(),
+            }
+        });
+
+        let (workspace_entries, path_to_workspaces) = collected.workspaces;
+        self.path_to_workspaces = path_to_workspaces;
+        let root_entries = match cached_roots {
+            Some(entries) => entries,
+            None if self.config.sources.roots => {
+                self.root_cache = Some((Instant::now(), collected.roots.clone()));
+                collected.roots
+            }
+            None => Vec::new(),
+        };
+
+        // Order decides which duplicate wins in `push_unique`.
         let mut entries = Vec::new();
         let mut seen = HashSet::new();
-        let (workspace_entries, path_to_workspaces) = collect_workspaces();
-        self.path_to_workspaces = path_to_workspaces;
-
         if self.config.sources.open_workspaces {
             push_unique(&mut entries, &mut seen, workspace_entries.clone());
         }
-        if self.config.sources.herdr_plus_projects {
-            push_unique(&mut entries, &mut seen, herdr_plus::collect_projects());
-        }
-        if self.config.sources.zoxide {
-            push_unique(&mut entries, &mut seen, collect_zoxide());
-        }
-        if self.config.sources.roots {
-            let cache_ttl = Duration::from_secs(self.config.picker.root_cache_seconds);
-            let root_entries = self
-                .root_cache
-                .as_ref()
-                .filter(|(created, _)| !cache_ttl.is_zero() && created.elapsed() <= cache_ttl)
-                .map(|(_, entries)| entries.clone())
-                .unwrap_or_else(|| {
-                    let entries = collect_roots(&self.config);
-                    self.root_cache = Some((Instant::now(), entries.clone()));
-                    entries
-                });
-            push_unique(&mut entries, &mut seen, root_entries);
-        }
-        if self.config.sources.servers {
-            push_unique(
-                &mut entries,
-                &mut seen,
-                sessions::collect_remotes(&self.config),
-            );
-        }
-        if self.config.sources.sessions {
-            push_unique(
-                &mut entries,
-                &mut seen,
-                sessions::collect_sessions(&self.config),
-            );
-        }
+        push_unique(&mut entries, &mut seen, collected.projects);
+        push_unique(&mut entries, &mut seen, collected.zoxide);
+        push_unique(&mut entries, &mut seen, root_entries);
+        push_unique(&mut entries, &mut seen, collected.remotes);
+        push_unique(&mut entries, &mut seen, collected.sessions);
         if self.config.sources.agents {
-            entries.extend(collect_agents(
+            entries.extend(agents_from_json(
+                &collected.agents,
                 &workspace_entries,
                 &self.config.agent_aliases,
             ));
@@ -120,11 +212,7 @@ impl App {
         if self.config.sources.herdr_plus_quick_actions && herdr_plus_quick_actions_dir().is_dir() {
             entries.push(herdr_plus::quick_actions_entry());
         }
-        push_unique(
-            &mut entries,
-            &mut seen,
-            command::collect(&self.config.integrations),
-        );
+        push_unique(&mut entries, &mut seen, collected.integrations);
 
         self.search_haystacks = entries.iter().map(Entry::haystack).collect();
         self.entries = entries;
@@ -161,74 +249,73 @@ impl App {
             query.all_agents || (self.source_filter == Some(Source::Agent) && empty_query);
         let use_agent_priority = empty_query
             && (agent_view || self.source_filter.is_none())
-            && agent_sort(&self.config.picker.agent_sort) == "priority";
+            && self.agent_sort == AgentSort::Priority;
         let pin_previous = self.config.jump_back.enabled
             && self.config.jump_back.pin_previous
             && self.query.trim().is_empty()
             && self.source_filter.is_none();
-        let mut scored = Vec::new();
-        let mut matcher = (!query.plain.is_empty())
-            .then(|| SearchMatcher::new(&self.config.picker.engine, &query.plain));
-        for (idx, e) in self.entries.iter().enumerate() {
-            if let Some(sf) = &self.source_filter {
-                if &e.source != sf {
-                    continue;
-                }
-            }
-            if !query.filters_match(e) {
+        let source_ranks = self.config.picker.source_ranks();
+        let mut matcher =
+            (!empty_query).then(|| SearchMatcher::new(&self.config.picker.engine, &query.plain));
+
+        let mut candidates = Vec::new();
+        for (index, entry) in self.entries.iter().enumerate() {
+            if self
+                .source_filter
+                .is_some_and(|filter| filter != entry.source)
+            {
                 continue;
             }
-            let bonus = self.config.picker.source_bonus(&e.source)
-                + query.score_bonus(e, use_agent_priority);
-            if let Some(matcher) = matcher.as_mut() {
-                let score = self
-                    .search_haystacks
-                    .get(idx)
-                    .and_then(|haystack| matcher.score(haystack))
-                    .or_else(|| {
-                        (idx >= self.search_haystacks.len())
-                            .then(|| matcher.score(&e.haystack()))
-                            .flatten()
-                    });
-                if let Some(score) = score {
-                    scored.push((score + bonus, idx));
-                }
-            } else {
-                scored.push((bonus, idx));
+            if !query.filters_match(entry) {
+                continue;
             }
+            let source_rank = source_ranks[entry.source.index()];
+            let bonus = self.config.picker.bonus_for_rank(source_rank)
+                + query.score_bonus(entry, use_agent_priority);
+            let score = match matcher.as_mut() {
+                Some(matcher) => {
+                    // Tests assign `entries` without haystacks; score those directly.
+                    let scored = match self.search_haystacks.get(index) {
+                        Some(haystack) => matcher.score(haystack),
+                        None => matcher.score(&entry.haystack()),
+                    };
+                    match scored {
+                        Some(score) => score + bonus,
+                        None => continue,
+                    }
+                }
+                None => bonus,
+            };
+            candidates.push(Candidate {
+                index,
+                score,
+                source_rank,
+                previous_pinned: pin_previous
+                    && entry.source == Source::Workspace
+                    && entry.workspace_id.as_deref() == self.previous_workspace_id.as_deref(),
+                user_pinned: self.is_pinned(entry),
+            });
         }
-        scored.sort_by(|(score_a, idx_a), (score_b, idx_b)| {
-            let user_pinned_a = self.is_pinned(&self.entries[*idx_a]);
-            let user_pinned_b = self.is_pinned(&self.entries[*idx_b]);
-            let previous_pinned_a = pin_previous
-                && self.entries[*idx_a].source == Source::Workspace
-                && self.entries[*idx_a].workspace_id.as_deref()
-                    == self.previous_workspace_id.as_deref();
-            let previous_pinned_b = pin_previous
-                && self.entries[*idx_b].source == Source::Workspace
-                && self.entries[*idx_b].workspace_id.as_deref()
-                    == self.previous_workspace_id.as_deref();
-            previous_pinned_b
-                .cmp(&previous_pinned_a)
-                .then_with(|| user_pinned_b.cmp(&user_pinned_a))
-                .then_with(|| score_b.cmp(score_a))
-                .then_with(|| {
-                    self.config
-                        .picker
-                        .source_rank(&self.entries[*idx_a].source)
-                        .cmp(&self.config.picker.source_rank(&self.entries[*idx_b].source))
-                })
+
+        candidates.sort_by(|a, b| {
+            b.previous_pinned
+                .cmp(&a.previous_pinned)
+                .then_with(|| b.user_pinned.cmp(&a.user_pinned))
+                .then_with(|| b.score.cmp(&a.score))
+                .then_with(|| a.source_rank.cmp(&b.source_rank))
                 .then_with(|| {
                     if agent_view {
-                        idx_a.cmp(idx_b)
+                        a.index.cmp(&b.index)
                     } else {
-                        self.entries[*idx_a].title.cmp(&self.entries[*idx_b].title)
+                        self.entries[a.index]
+                            .title
+                            .cmp(&self.entries[b.index].title)
                     }
                 })
         });
-        let (scores, filtered): (Vec<_>, Vec<_>) = scored.into_iter().unzip();
-        self.filtered = filtered;
-        self.filtered_scores = scores;
+
+        self.filtered_scores = candidates.iter().map(|c| c.score).collect();
+        self.filtered = candidates.into_iter().map(|c| c.index).collect();
         self.selected = 0;
     }
 
@@ -247,7 +334,7 @@ impl App {
             Some(cur) => {
                 let all = Source::all();
                 let pos = all.iter().position(|s| s == cur).unwrap_or(0);
-                all.get(pos + 1).cloned()
+                all.get(pos + 1).copied()
             }
         };
         self.selected = 0;
@@ -279,7 +366,7 @@ impl App {
             .ok_or("nothing selected")?;
         let mut pinned = self.pinned_entries.clone();
         if !pinned.remove(&key) {
-            pinned.insert(key);
+            pinned.insert(key.clone());
         }
         save_pinned_entries(
             &plugin_config_dir().join(PINNED_ENTRIES_STATE_FILE),
@@ -287,6 +374,8 @@ impl App {
         )?;
         self.pinned_entries = pinned;
         self.apply_filter();
+        // Marking re-sorts the list; keep the cursor on the row the user marked.
+        self.restore_selection(Some(&key));
         Ok(())
     }
 
@@ -491,7 +580,7 @@ impl App {
 
     pub(crate) fn workspaces_for_entry(&self, e: &Entry) -> &[WorkspaceRef] {
         self.path_to_workspaces
-            .get(&e.key())
+            .get(e.key())
             .map(Vec::as_slice)
             .unwrap_or(&[])
     }
@@ -503,7 +592,7 @@ impl App {
     }
 
     pub(crate) fn matching_dir_workspace(&self, e: &Entry) -> Option<&WorkspaceRef> {
-        self.matching_dir_workspace_by_key(&e.key())
+        self.matching_dir_workspace_by_key(e.key())
     }
 
     fn matching_dir_workspace_by_key(&self, key: &str) -> Option<&WorkspaceRef> {
@@ -572,14 +661,16 @@ impl Query {
         if agent_query && entry.source != Source::Agent {
             return false;
         }
-        all_match(&self.agent, &agent_text(entry))
-            && all_match_either(
-                &self.workspace_or_status,
-                &workspace_text(entry),
-                &status_text(entry),
-            )
-            && all_match(&self.path, &entry.path.display().to_string())
-            && all_match(&self.status, &status_text(entry))
+        // Each `*_text` builds a lowercased String, so skip unused filters.
+        (self.agent.is_empty() || all_match(&self.agent, &agent_text(entry)))
+            && (self.workspace_or_status.is_empty()
+                || all_match_either(
+                    &self.workspace_or_status,
+                    &workspace_text(entry),
+                    &status_text(entry),
+                ))
+            && (self.path.is_empty() || all_match(&self.path, &entry.path.display().to_string()))
+            && (self.status.is_empty() || all_match(&self.status, &status_text(entry)))
     }
 
     fn score_bonus(&self, entry: &Entry, use_agent_priority: bool) -> i64 {
@@ -775,32 +866,6 @@ fn close_current_workspace_error(id: &str, current: Option<&str>) -> Option<Stri
         .then(|| "can't close the workspace that owns this picker; switch away first".into())
 }
 
-fn agent_sort(configured: &str) -> String {
-    match configured.to_lowercase().as_str() {
-        "priority" => "priority".into(),
-        "spaces" => "spaces".into(),
-        _ => herdr_agent_panel_sort(),
-    }
-}
-
-fn herdr_agent_panel_sort() -> String {
-    let path = std::env::var("XDG_CONFIG_HOME")
-        .map(|xdg| Path::new(&xdg).join("herdr/config.toml"))
-        .unwrap_or_else(|_| home().join(".config/herdr/config.toml"));
-    fs::read_to_string(path)
-        .ok()
-        .and_then(|s| s.parse::<toml::Value>().ok())
-        .and_then(|v| {
-            v.get("ui")
-                .and_then(|x| x.as_table())
-                .and_then(|x| x.get("agent_panel_sort"))
-                .or_else(|| v.get("agent_panel_sort"))
-                .and_then(|x| x.as_str())
-                .map(str::to_string)
-        })
-        .unwrap_or_else(|| "spaces".into())
-}
-
 fn pin_key(entry: &Entry) -> String {
     match &entry.action {
         EntryAction::FocusWorkspace { id } => format!("workspace:{id}"),
@@ -844,6 +909,8 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
+    use std::cell::OnceCell;
+
     use super::*;
     use crate::{config::Config, model::Project, theme::Theme};
 
@@ -860,6 +927,7 @@ mod tests {
             action: EntryAction::FocusOrCreateDir,
             source_label: None,
             search_terms: vec![],
+            canonical_key: OnceCell::new(),
         }
     }
 
@@ -893,6 +961,7 @@ mod tests {
             },
             source_label: None,
             search_terms: vec!["main ai dot".into()],
+            canonical_key: OnceCell::new(),
         }
     }
 
@@ -924,8 +993,8 @@ mod tests {
         assert_eq!(agent_status_bonus(&done), 2);
         assert_eq!(agent_status_bonus(&working), 1);
         assert_eq!(agent_status_bonus(&idle), 0);
-        assert_eq!(agent_sort("priority"), "priority");
-        assert_eq!(agent_sort("spaces"), "spaces");
+        assert_eq!(AgentSort::resolve("priority"), AgentSort::Priority);
+        assert_eq!(AgentSort::resolve("spaces"), AgentSort::Spaces);
     }
 
     #[test]
@@ -936,7 +1005,7 @@ mod tests {
     #[test]
     fn default_empty_picker_prioritizes_agent_status() {
         let mut app = App::new(Config::default(), Theme::load(false));
-        app.config.picker.agent_sort = "priority".into();
+        app.agent_sort = AgentSort::Priority;
         app.entries = vec![
             agent_entry_with_status("idle"),
             agent_entry_with_status("done"),
@@ -1021,6 +1090,35 @@ mod tests {
         save_pinned_entries(&path, &app.pinned_entries).unwrap();
         assert_eq!(read_pinned_entries(&path).unwrap(), app.pinned_entries);
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn marking_keeps_the_cursor_on_the_marked_row() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = env::temp_dir().join(format!("herdr-mark-{suffix}"));
+        env::set_var("HERDR_PLUGIN_CONFIG_DIR", &dir);
+
+        let mut app = App::new(Config::default(), Theme::load(false));
+        app.entries = vec![
+            entry(Source::Root, "/alpha", "alpha"),
+            entry(Source::Root, "/zulu", "zulu"),
+        ];
+        app.apply_filter();
+        app.selected = 1;
+
+        app.toggle_selected_pin().unwrap();
+        assert_eq!(app.selected, 0, "marking sorts the row to the top");
+        assert_eq!(app.selected_entry().unwrap().title, "zulu");
+
+        app.toggle_selected_pin().unwrap();
+        assert_eq!(app.selected, 1, "unmarking sorts the row back down");
+        assert_eq!(app.selected_entry().unwrap().title, "zulu");
+
+        env::remove_var("HERDR_PLUGIN_CONFIG_DIR");
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
