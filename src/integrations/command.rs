@@ -1,4 +1,9 @@
-use std::process::Command;
+use std::{
+    io::Read,
+    process::{Command, ExitStatus, Stdio},
+    thread,
+    time::{Duration, Instant},
+};
 
 use serde::Deserialize;
 
@@ -20,28 +25,37 @@ struct IntegrationItem {
 }
 
 pub(crate) fn collect(integrations: &[IntegrationConfig]) -> Vec<Entry> {
-    integrations
+    let enabled = integrations
         .iter()
         .filter(|integration| integration.enabled)
-        .flat_map(collect_one)
-        .collect()
+        .collect::<Vec<_>>();
+    let mut entries = Vec::new();
+    thread::scope(|scope| {
+        for chunk in enabled.chunks(4) {
+            let handles = chunk
+                .iter()
+                .map(|integration| scope.spawn(|| collect_one(integration)))
+                .collect::<Vec<_>>();
+            for handle in handles {
+                entries.extend(handle.join().unwrap_or_default());
+            }
+        }
+    });
+    entries
 }
 
 fn collect_one(integration: &IntegrationConfig) -> Vec<Entry> {
     if integration.id.trim().is_empty() {
         return vec![];
     }
-    let Ok(output) = Command::new("sh")
-        .arg("-c")
-        .arg(&integration.collect)
-        .output()
-    else {
+    let Ok(stdout) = run_shell_capture(
+        &integration.collect,
+        integration.collect_timeout_ms,
+        integration.max_output_bytes,
+    ) else {
         return vec![];
     };
-    if !output.status.success() {
-        return vec![];
-    }
-    parse_items(&output.stdout)
+    parse_items(&stdout)
         .unwrap_or_default()
         .into_iter()
         .map(|item| entry_from_item(integration, item))
@@ -74,6 +88,7 @@ fn entry_from_item(integration: &IntegrationConfig, item: IntegrationItem) -> En
         project: None,
         action: EntryAction::RunCommand {
             command,
+            timeout_ms: integration.open_timeout_ms,
             notify_success: integration.notify_success,
             notify_error: integration.notify_error,
         },
@@ -110,12 +125,77 @@ fn shell_quote(value: &str) -> String {
     }
 }
 
-pub(crate) fn run_command(command: &str) -> Result<(), String> {
-    let status = Command::new("sh")
-        .arg("-c")
-        .arg(command)
-        .status()
-        .map_err(|e| e.to_string())?;
+fn shell(command: &str) -> Command {
+    let mut process = Command::new("sh");
+    process.arg("-c").arg(command);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        process.process_group(0);
+    }
+    process
+}
+
+fn wait_with_timeout(
+    child: &mut std::process::Child,
+    timeout_ms: u64,
+) -> Result<ExitStatus, String> {
+    let deadline = (timeout_ms > 0).then(|| Instant::now() + Duration::from_millis(timeout_ms));
+    loop {
+        if let Some(status) = child.try_wait().map_err(|error| error.to_string())? {
+            return Ok(status);
+        }
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            terminate_process_group(child);
+            let _ = child.wait();
+            return Err(format!("command timed out after {timeout_ms}ms"));
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn terminate_process_group(child: &mut std::process::Child) {
+    #[cfg(unix)]
+    // Kill the group so timed-out grandchildren cannot survive or hold pipes open.
+    unsafe {
+        libc::kill(-(child.id() as i32), libc::SIGKILL);
+    }
+    let _ = child.kill();
+}
+
+fn run_shell_capture(command: &str, timeout_ms: u64, max_bytes: usize) -> Result<Vec<u8>, String> {
+    let mut child = shell(command)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|error| error.to_string())?;
+    let stdout = child.stdout.take().ok_or("collect command has no stdout")?;
+    let limit = max_bytes.saturating_add(1) as u64;
+    let reader = thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stdout
+            .take(limit)
+            .read_to_end(&mut bytes)
+            .map(|_| bytes)
+            .map_err(|error| error.to_string())
+    });
+    let status = wait_with_timeout(&mut child, timeout_ms)?;
+    let bytes = reader
+        .join()
+        .map_err(|_| "collect output reader panicked".to_string())??;
+    if bytes.len() > max_bytes {
+        return Err(format!("command output exceeded {max_bytes} bytes"));
+    }
+    if !status.success() {
+        return Err(format!("command exited with {status}"));
+    }
+    Ok(bytes)
+}
+
+pub(crate) fn run_command(command: &str, timeout_ms: u64) -> Result<(), String> {
+    let mut child = shell(command).spawn().map_err(|error| error.to_string())?;
+    let status = wait_with_timeout(&mut child, timeout_ms)?;
     if status.success() {
         Ok(())
     } else {
@@ -134,6 +214,9 @@ mod tests {
             enabled: true,
             collect: "demo list --json".into(),
             open: "demo open {{id}} --path {{path}}".into(),
+            collect_timeout_ms: 5_000,
+            open_timeout_ms: 0,
+            max_output_bytes: 1_048_576,
             notify_success: true,
             notify_error: true,
         }
@@ -221,6 +304,16 @@ mod tests {
         cfg.collect = "exit 7".into();
 
         assert!(collect(&[cfg]).is_empty());
+    }
+
+    #[test]
+    fn collect_timeout_and_output_limit_are_enforced() {
+        assert!(run_shell_capture("sleep 1", 20, 1024)
+            .unwrap_err()
+            .contains("timed out"));
+        assert!(run_shell_capture("printf 12345", 1000, 4)
+            .unwrap_err()
+            .contains("exceeded"));
     }
 
     #[test]

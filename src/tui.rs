@@ -93,11 +93,27 @@ pub(crate) fn tui_loop(
                     terminal.clear()?;
                 }
                 Action::CloseWorkspace => {
-                    if let Err(e) = app.close_selected_workspace() {
-                        crate::herdr::notify_error(
-                            &format!("Close failed: {e}"),
-                            &app.config.notifications,
-                        );
+                    let confirmed = if app.config.picker.confirm_close_workspace {
+                        let title = app
+                            .selected_entry()
+                            .map(|entry| entry.title.clone())
+                            .unwrap_or_else(|| "selected workspace".into());
+                        cleanup_terminal(&mut terminal)?;
+                        let confirmed = confirm_close_workspace(&title)?;
+                        enable_raw_mode()?;
+                        execute!(terminal.backend_mut(), EnterAlternateScreen)?;
+                        terminal.clear()?;
+                        confirmed
+                    } else {
+                        true
+                    };
+                    if confirmed {
+                        if let Err(e) = app.close_selected_workspace() {
+                            crate::herdr::notify_error(
+                                &format!("Close failed: {e}"),
+                                &app.config.notifications,
+                            );
+                        }
                     }
                 }
             },
@@ -116,7 +132,17 @@ fn cleanup_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io
 }
 
 fn confirm_update(version: &str) -> io::Result<bool> {
-    eprintln!("Update Herdr Navigator to v{version}? [y/N]");
+    confirm(&format!("Update Herdr Navigator to v{version}?"))
+}
+
+fn confirm_close_workspace(title: &str) -> io::Result<bool> {
+    confirm(&format!(
+        "Close workspace {title:?}? Running processes may stop."
+    ))
+}
+
+fn confirm(prompt: &str) -> io::Result<bool> {
+    eprintln!("{prompt} [y/N]");
     let mut answer = String::new();
     io::stdin().read_line(&mut answer)?;
     Ok(matches!(

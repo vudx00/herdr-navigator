@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
     process::Command,
@@ -272,13 +272,33 @@ pub(crate) fn collect_zoxide() -> Vec<Entry> {
 
 pub(crate) fn collect_roots(config: &Config) -> Vec<Entry> {
     let mut out = Vec::new();
+    let mut visited = HashSet::new();
     for root in &config.roots {
-        walk_dirs(&expand_path(&root.path), root.max_depth, &mut out);
+        walk_dirs(
+            &expand_path(&root.path),
+            root.max_depth,
+            &root.exclude,
+            root.follow_symlinks,
+            &mut visited,
+            &mut out,
+        );
     }
     out
 }
-fn walk_dirs(path: &Path, depth: usize, out: &mut Vec<Entry>) {
+
+fn walk_dirs(
+    path: &Path,
+    depth: usize,
+    excludes: &[String],
+    follow_symlinks: bool,
+    visited: &mut HashSet<PathBuf>,
+    out: &mut Vec<Entry>,
+) {
     if depth == 0 || !path.is_dir() {
+        return;
+    }
+    let canonical = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    if !visited.insert(canonical) {
         return;
     }
     if path.join(".git").exists()
@@ -300,10 +320,23 @@ fn walk_dirs(path: &Path, depth: usize, out: &mut Vec<Entry>) {
         });
     }
     if let Ok(read) = fs::read_dir(path) {
-        for e in read.flatten() {
-            let p = e.path();
-            if p.is_dir() && !basename(&p).starts_with('.') {
-                walk_dirs(&p, depth - 1, out);
+        for entry in read.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with('.') || excludes.iter().any(|excluded| excluded == &name) {
+                continue;
+            }
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_dir() || (follow_symlinks && file_type.is_symlink()) {
+                walk_dirs(
+                    &entry.path(),
+                    depth - 1,
+                    excludes,
+                    follow_symlinks,
+                    visited,
+                    out,
+                );
             }
         }
     }
@@ -336,6 +369,36 @@ mod tests {
         assert_eq!(agents[0].agent_target.as_deref(), Some("term_1"));
         assert!(agents[0].search_terms.contains(&"58f4-session".to_string()));
         assert!(agents[0].subtitle.starts_with("working"));
+    }
+
+    #[test]
+    fn root_scan_excludes_generated_trees() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("herdr-root-scan-{suffix}"));
+        let project = root.join("project");
+        let dependency = root.join("node_modules/dependency");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&dependency).unwrap();
+        fs::write(project.join("Cargo.toml"), "[package]").unwrap();
+        fs::write(dependency.join("package.json"), "{}").unwrap();
+
+        let mut config = Config::default();
+        config.roots = vec![crate::config::RootConfig {
+            path: root.display().to_string(),
+            max_depth: 4,
+            exclude: vec!["node_modules".into()],
+            follow_symlinks: false,
+        }];
+        let entries = collect_roots(&config);
+        fs::remove_dir_all(root).unwrap();
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].title, "project");
     }
 
     #[test]

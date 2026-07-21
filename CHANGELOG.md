@@ -4,9 +4,19 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-21
+
 ### Added
-- Apply one reusable Herdr Plus tabs/panes template to any zoxide/root directory with a configurable shortcut (`Alt-Enter` by default), creating the workspace or appending fresh template tabs when already open; `Enter` keeps normal behavior.
-- Press `F5` on the update badge to confirm and install the available release through Herdr.
+- Apply reusable Herdr Plus pane templates to directory entries.
+- Confirm before closing workspaces.
+- Bound integration collection with configurable timeouts and output limits.
+- Cache root scans, exclude generated trees, and avoid symlinks by default.
+- Remap a default source filter when it conflicts with Herdr's Ctrl prefix.
+
+### Changed
+- Reuse fuzzy-matcher state and precomputed search text during filtering.
+- Preserve selection across refreshes.
+- Disable update checks by default and retain Herdr's install review prompt.
 
 ## [0.3.3] - 2026-07-18
 

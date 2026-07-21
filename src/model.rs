@@ -86,6 +86,7 @@ pub(crate) enum EntryAction {
     FocusOrCreateDir,
     RunCommand {
         command: String,
+        timeout_ms: u64,
         notify_success: bool,
         notify_error: bool,
     },

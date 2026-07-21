@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/thanhdat77/herdr-navigator/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/thanhdat77/herdr-navigator/actions/workflows/ci.yml/badge.svg" /></a>
+  <a href="https://github.com/vudx00/herdr-navigator/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/vudx00/herdr-navigator/actions/workflows/ci.yml/badge.svg" /></a>
   <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-2ea44f" /></a>
   <img alt="Herdr 0.7.3+" src="https://img.shields.io/badge/Herdr-0.7.3%2B-66b3ff" />
   <img alt="Linux and macOS" src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS-c084fc" />
@@ -27,7 +27,7 @@ prefix+t  →  type  →  Enter
 ## Install
 
 ```bash
-herdr plugin install thanhdat77/herdr-navigator --ref v0.3.3 --yes
+herdr plugin install vudx00/herdr-navigator --ref v0.4.0
 herdr plugin action invoke herdr-navigator.open
 ```
 
@@ -47,7 +47,7 @@ Sorry for the migration. This completes the rename while the project is still yo
 
 ```bash
 herdr plugin uninstall herdr-picker-plus
-herdr plugin install thanhdat77/herdr-navigator --ref v0.3.3 --yes
+herdr plugin install vudx00/herdr-navigator --ref v0.4.0
 herdr server reload-config
 ```
 
@@ -121,14 +121,14 @@ Every source can be disabled. Missing optional tools degrade quietly.
 | `Up` / `Down` | Move selection |
 | `Tab` | Cycle source filters |
 | `Ctrl-W` | Workspaces |
-| `Ctrl-A` / `@` | Agents, using configured status order |
+| `Ctrl-A` / `@` | Agents; a conflicting Herdr prefix is remapped automatically |
 | `Ctrl-P` | Herdr Plus projects |
 | `Ctrl-Q` | Herdr Plus Quick Actions |
 | `Ctrl-S` | Remotes |
 | `Ctrl-L` | Sessions |
 | `Ctrl-Z` | Zoxide |
 | `Ctrl-R` | Roots |
-| `Ctrl-X` | Close the open workspace matching the selected item |
+| `Ctrl-X` | Confirm, then close the matching open workspace |
 | `Ctrl-B` | Mark or unmark the selected item |
 | `Ctrl-O` | Toggle preview |
 | `Ctrl-U` | Clear query and filter |
@@ -154,7 +154,7 @@ Set `vim_mode = true` for normal-mode `j`/`k`, source keys, and `/` search. All 
 
 ### Close an open directory
 
-Select an `open` or `agent` entry, or a `project`, `root`, or `zoxide` entry that matches an open workspace, then press `Ctrl-X`. Navigator closes that workspace and refreshes the list.
+Select an `open` or `agent` entry, or a `project`, `root`, or `zoxide` entry that matches an open workspace, then press `Ctrl-X`. Navigator asks for confirmation before closing the workspace and refreshing the list.
 
 Navigator refuses to close the workspace that owns the picker; switch away first. Directories that are not open and server, session, quick-action, or plugin entries are left unchanged.
 
@@ -196,7 +196,7 @@ Optional binding:
 
 ```toml
 [[keys.command]]
-key = "prefix+shift+t"
+key = "prefix+shift+f"
 type = "plugin_action"
 command = "herdr-navigator.open-side"
 description = "navigator side pane"
@@ -222,7 +222,9 @@ source_priority_boost = 5
 agent_sort = "herdr" # herdr | priority | spaces
 preview = true
 detailed_rows = true # source-aware Herdr-style result rows
-check_updates = true # daily background release check
+check_updates = false # enable only when you want GitHub release checks
+confirm_close_workspace = true
+root_cache_seconds = 60
 # directory_template = "default.toml" # Herdr Plus project file
 # directory_template_key = "alt-enter" # or ctrl-g / ctrl-t
 vim_mode = false
@@ -251,7 +253,7 @@ max_depth = 3
 Useful config surfaces:
 
 - `picker.detailed_rows` enables source-aware rows: right-aligned metadata for most sources and a full-path second line only for zoxide/root.
-- `picker.check_updates` checks GitHub releases in the background at most daily and shows `↑ vX.Y.Z available · F5 update`; press `F5`, confirm, and Navigator installs that release through Herdr. Failures stay silent until an update is requested.
+- `picker.check_updates` optionally checks GitHub releases daily. F5 keeps Herdr's source/build review prompt before installation.
 - `picker.directory_template = "default.toml"` reuses that Herdr Plus project file from its `projects/` config directory. `Enter` keeps normal reuse/create behavior. `picker.directory_template_key` defaults to `alt-enter` and also accepts Ctrl forms such as `ctrl-g`; the shortcut always applies all template tabs, panes, labels, and commands using the selected directory instead of the template's `working_dir`, creating the workspace or appending fresh template tabs.
 - `[notifications]` can disable notifications entirely or use Herdr's default sounds, no sound, or a custom audio file.
 - `[picker.filter_keys]` remaps source shortcuts.
@@ -294,7 +296,7 @@ Navigator shell-quotes `{{id}}`, `{{title}}`, `{{subtitle}}`, `{{path}}`, and `{
 Build and link locally:
 
 ```bash
-git clone https://github.com/thanhdat77/herdr-navigator.git
+git clone https://github.com/vudx00/herdr-navigator.git
 cd herdr-navigator
 cargo build --release
 herdr plugin link "$PWD"

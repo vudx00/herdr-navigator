@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fs};
+use std::{collections::HashMap, env, fs, path::PathBuf};
 
 use serde::Deserialize;
 
@@ -49,8 +49,12 @@ pub(crate) struct PickerConfig {
     pub(crate) preview: bool,
     #[serde(default = "yes")]
     pub(crate) detailed_rows: bool,
-    #[serde(default = "yes")]
+    #[serde(default)]
     pub(crate) check_updates: bool,
+    #[serde(default = "yes")]
+    pub(crate) confirm_close_workspace: bool,
+    #[serde(default = "default_root_cache_seconds")]
+    pub(crate) root_cache_seconds: u64,
     #[serde(default)]
     pub(crate) directory_template: Option<String>,
     #[serde(default = "default_directory_template_key")]
@@ -128,6 +132,12 @@ pub(crate) struct IntegrationConfig {
     pub(crate) enabled: bool,
     pub(crate) collect: String,
     pub(crate) open: String,
+    #[serde(default = "default_collect_timeout_ms")]
+    pub(crate) collect_timeout_ms: u64,
+    #[serde(default)]
+    pub(crate) open_timeout_ms: u64,
+    #[serde(default = "default_max_output_bytes")]
+    pub(crate) max_output_bytes: usize,
     #[serde(default = "yes")]
     pub(crate) notify_success: bool,
     #[serde(default = "yes")]
@@ -166,12 +176,31 @@ pub(crate) struct RootConfig {
     pub(crate) path: String,
     #[serde(default = "default_depth")]
     pub(crate) max_depth: usize,
+    #[serde(default = "default_root_excludes")]
+    pub(crate) exclude: Vec<String>,
+    #[serde(default)]
+    pub(crate) follow_symlinks: bool,
 }
 fn yes() -> bool {
     true
 }
 fn default_depth() -> usize {
     3
+}
+fn default_root_excludes() -> Vec<String> {
+    ["node_modules", "target", "vendor", ".venv", "dist", "build"]
+        .into_iter()
+        .map(String::from)
+        .collect()
+}
+fn default_root_cache_seconds() -> u64 {
+    60
+}
+fn default_collect_timeout_ms() -> u64 {
+    5_000
+}
+fn default_max_output_bytes() -> usize {
+    1_048_576
 }
 fn default_engine() -> String {
     "nucleo".into()
@@ -248,7 +277,9 @@ impl Default for PickerConfig {
             agent_sort: default_agent_sort(),
             preview: true,
             detailed_rows: true,
-            check_updates: true,
+            check_updates: false,
+            confirm_close_workspace: true,
+            root_cache_seconds: default_root_cache_seconds(),
             directory_template: None,
             directory_template_key: default_directory_template_key(),
             vim_mode: false,
@@ -368,14 +399,20 @@ impl Default for Config {
                 RootConfig {
                     path: "~/workspace".into(),
                     max_depth: 3,
+                    exclude: default_root_excludes(),
+                    follow_symlinks: false,
                 },
                 RootConfig {
                     path: "~/work".into(),
                     max_depth: 3,
+                    exclude: default_root_excludes(),
+                    follow_symlinks: false,
                 },
                 RootConfig {
                     path: "~/projects".into(),
                     max_depth: 3,
+                    exclude: default_root_excludes(),
+                    follow_symlinks: false,
                 },
             ],
         }
@@ -391,11 +428,52 @@ impl Config {
         if !path.exists() {
             let _ = fs::write(&path, DEFAULT_CONFIG);
         }
-        fs::read_to_string(path)
+        let mut config: Self = fs::read_to_string(path)
             .ok()
             .and_then(|s| toml::from_str(&s).ok())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        if let Some(prefix) = herdr_ctrl_prefix() {
+            config.avoid_default_prefix_conflict(prefix);
+        }
+        config
     }
+
+    fn avoid_default_prefix_conflict(&mut self, prefix: char) {
+        let Some(source) = default_filter_keys()
+            .into_iter()
+            .find_map(|(source, key)| (key == prefix).then_some(source))
+        else {
+            return;
+        };
+        if self
+            .picker
+            .filter_keys
+            .keys()
+            .filter_map(|name| Source::from_config(name))
+            .any(|custom_source| custom_source == source)
+        {
+            return;
+        }
+        let source_name = source.label().to_string();
+        if let Some(key) = ['g', 'e', 'd', 'f', 'y']
+            .into_iter()
+            .find(|key| self.picker.filter_source_for_key(*key).is_none())
+        {
+            self.picker
+                .filter_keys
+                .insert(source_name, format!("ctrl-{key}"));
+        }
+    }
+}
+
+fn herdr_ctrl_prefix() -> Option<char> {
+    let path = env::var("XDG_CONFIG_HOME")
+        .map(|root| PathBuf::from(root).join("herdr/config.toml"))
+        .unwrap_or_else(|_| crate::paths::home().join(".config/herdr/config.toml"));
+    let source = fs::read_to_string(path).ok()?;
+    let value: toml::Value = toml::from_str(&source).ok()?;
+    let prefix = value.get("keys")?.get("prefix")?.as_str()?;
+    parse_ctrl_key(prefix)
 }
 
 #[cfg(test)]
@@ -451,18 +529,49 @@ mod tests {
     }
 
     #[test]
-    fn update_checks_default_on_and_can_be_disabled() {
-        assert!(Config::default().picker.check_updates);
+    fn update_checks_default_off_and_can_be_enabled() {
+        assert!(!Config::default().picker.check_updates);
 
         let config: Config = toml::from_str(
             r#"
             [picker]
-            check_updates = false
+            check_updates = true
             "#,
         )
         .unwrap();
 
-        assert!(!config.picker.check_updates);
+        assert!(config.picker.check_updates);
+    }
+
+    #[test]
+    fn conflicting_host_prefix_remaps_only_the_default_filter() {
+        let mut config = Config::default();
+        config.avoid_default_prefix_conflict('a');
+        assert_eq!(
+            config.picker.filter_source_for_key('g'),
+            Some(Source::Agent)
+        );
+        assert_eq!(config.picker.filter_source_for_key('a'), None);
+
+        let mut customized = Config::default();
+        customized
+            .picker
+            .filter_keys
+            .insert("agent".into(), "ctrl-e".into());
+        customized.avoid_default_prefix_conflict('a');
+        assert_eq!(
+            customized.picker.filter_source_for_key('e'),
+            Some(Source::Agent)
+        );
+    }
+
+    #[test]
+    fn root_scanning_is_cached_and_excludes_build_trees_by_default() {
+        let config = Config::default();
+        assert_eq!(config.picker.root_cache_seconds, 60);
+        assert!(config.picker.confirm_close_workspace);
+        assert!(config.roots[0].exclude.contains(&"node_modules".into()));
+        assert!(!config.roots[0].follow_symlinks);
     }
 
     #[test]
@@ -529,6 +638,9 @@ mod tests {
             label = "Bookmarks"
             collect = "bookmarks list --json"
             open = "bookmarks open {{id}}"
+            collect_timeout_ms = 2500
+            open_timeout_ms = 30000
+            max_output_bytes = 4096
             notify_success = false
             "#,
         )
@@ -537,6 +649,9 @@ mod tests {
         assert_eq!(config.integrations.len(), 1);
         assert_eq!(config.integrations[0].id, "bookmarks");
         assert_eq!(config.integrations[0].label, "Bookmarks");
+        assert_eq!(config.integrations[0].collect_timeout_ms, 2500);
+        assert_eq!(config.integrations[0].open_timeout_ms, 30000);
+        assert_eq!(config.integrations[0].max_output_bytes, 4096);
         assert!(!config.integrations[0].notify_success);
         assert!(config.integrations[0].notify_error);
     }

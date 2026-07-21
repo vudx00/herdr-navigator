@@ -2,13 +2,14 @@ use std::{
     collections::{HashMap, HashSet},
     env, fs,
     path::Path,
+    time::{Duration, Instant},
 };
 
 use crate::{
     config::Config,
     herdr::{herdr_json, notify_done, notify_error, run_herdr},
     integrations::{command, herdr_plus, sessions},
-    matcher::match_score,
+    matcher::SearchMatcher,
     model::{Entry, EntryAction, Source, WorkspaceKind, WorkspaceRef},
     paths::{canonical_str, herdr_plus_quick_actions_dir, home, plugin_config_dir},
     sources::{collect_agents, collect_roots, collect_workspaces, collect_zoxide},
@@ -26,6 +27,8 @@ pub(crate) struct App {
     pub(crate) config: Config,
     pub(crate) theme: Theme,
     pub(crate) entries: Vec<Entry>,
+    search_haystacks: Vec<String>,
+    root_cache: Option<(Instant, Vec<Entry>)>,
     pub(crate) filtered: Vec<usize>,
     pub(crate) filtered_scores: Vec<i64>,
     pub(crate) selected: usize,
@@ -47,6 +50,8 @@ impl App {
             config,
             theme,
             entries: vec![],
+            search_haystacks: vec![],
+            root_cache: None,
             filtered: vec![],
             filtered_scores: vec![],
             selected: 0,
@@ -63,6 +68,7 @@ impl App {
     }
 
     pub(crate) fn refresh(&mut self) {
+        let selected_key = self.selected_entry().map(pin_key);
         let mut entries = Vec::new();
         let mut seen = HashSet::new();
         let (workspace_entries, path_to_workspaces) = collect_workspaces();
@@ -78,7 +84,18 @@ impl App {
             push_unique(&mut entries, &mut seen, collect_zoxide());
         }
         if self.config.sources.roots {
-            push_unique(&mut entries, &mut seen, collect_roots(&self.config));
+            let cache_ttl = Duration::from_secs(self.config.picker.root_cache_seconds);
+            let root_entries = self
+                .root_cache
+                .as_ref()
+                .filter(|(created, _)| !cache_ttl.is_zero() && created.elapsed() <= cache_ttl)
+                .map(|(_, entries)| entries.clone())
+                .unwrap_or_else(|| {
+                    let entries = collect_roots(&self.config);
+                    self.root_cache = Some((Instant::now(), entries.clone()));
+                    entries
+                });
+            push_unique(&mut entries, &mut seen, root_entries);
         }
         if self.config.sources.servers {
             push_unique(
@@ -109,6 +126,7 @@ impl App {
             command::collect(&self.config.integrations),
         );
 
+        self.search_haystacks = entries.iter().map(Entry::haystack).collect();
         self.entries = entries;
         self.pinned_entries =
             read_pinned_entries(&plugin_config_dir().join(PINNED_ENTRIES_STATE_FILE))
@@ -120,6 +138,20 @@ impl App {
                 None
             };
         self.apply_filter();
+        self.restore_selection(selected_key.as_deref());
+    }
+
+    fn restore_selection(&mut self, selected_key: Option<&str>) {
+        let Some(selected_key) = selected_key else {
+            return;
+        };
+        if let Some(position) = self.filtered.iter().position(|index| {
+            self.entries
+                .get(*index)
+                .is_some_and(|entry| pin_key(entry) == selected_key)
+        }) {
+            self.selected = position;
+        }
     }
 
     pub(crate) fn apply_filter(&mut self) {
@@ -135,6 +167,8 @@ impl App {
             && self.query.trim().is_empty()
             && self.source_filter.is_none();
         let mut scored = Vec::new();
+        let mut matcher = (!query.plain.is_empty())
+            .then(|| SearchMatcher::new(&self.config.picker.engine, &query.plain));
         for (idx, e) in self.entries.iter().enumerate() {
             if let Some(sf) = &self.source_filter {
                 if &e.source != sf {
@@ -144,14 +178,23 @@ impl App {
             if !query.filters_match(e) {
                 continue;
             }
-            let hay = e.haystack();
             let bonus = self.config.picker.source_bonus(&e.source)
                 + query.score_bonus(e, use_agent_priority);
-            if query.plain.is_empty() {
+            if let Some(matcher) = matcher.as_mut() {
+                let score = self
+                    .search_haystacks
+                    .get(idx)
+                    .and_then(|haystack| matcher.score(haystack))
+                    .or_else(|| {
+                        (idx >= self.search_haystacks.len())
+                            .then(|| matcher.score(&e.haystack()))
+                            .flatten()
+                    });
+                if let Some(score) = score {
+                    scored.push((score + bonus, idx));
+                }
+            } else {
                 scored.push((bonus, idx));
-            } else if let Some(score) = match_score(&self.config.picker.engine, &hay, &query.plain)
-            {
-                scored.push((score + bonus, idx));
             }
         }
         scored.sort_by(|(score_a, idx_a), (score_b, idx_b)| {
@@ -301,10 +344,11 @@ impl App {
             ),
             EntryAction::RunCommand {
                 command,
+                timeout_ms,
                 notify_success,
                 notify_error,
             } => (
-                command::run_command(command),
+                command::run_command(command, *timeout_ms),
                 *notify_success,
                 *notify_error,
             ),
@@ -904,6 +948,25 @@ mod tests {
     }
 
     #[test]
+    fn refresh_selection_is_restored_by_stable_entry_key() {
+        let mut app = App::new(Config::default(), Theme::load(false));
+        app.entries = vec![
+            entry(Source::Root, "/alpha", "alpha"),
+            entry(Source::Root, "/zulu", "zulu"),
+        ];
+        app.filtered = vec![1, 0];
+        app.selected = 0;
+        let selected_key = pin_key(&app.entries[1]);
+
+        app.filtered = vec![0, 1];
+        app.selected = 0;
+        app.restore_selection(Some(&selected_key));
+
+        assert_eq!(app.selected, 1);
+        assert_eq!(app.selected_entry().unwrap().title, "zulu");
+    }
+
+    #[test]
     fn previous_workspace_is_pinned_only_on_initial_unfiltered_view() {
         let mut app = App::new(Config::default(), Theme::load(false));
         let mut alpha = entry(Source::Workspace, "/alpha", "alpha");
@@ -983,7 +1046,7 @@ mod tests {
     fn source_specific_reuse_distinguishes_same_path_workspaces() {
         let mut app = App::new(Config::default(), Theme::load(false));
         app.path_to_workspaces.insert(
-            "/tmp".into(),
+            canonical_str(Path::new("/tmp")).unwrap(),
             vec![
                 workspace("w1", "project: tmp", WorkspaceKind::Project, "/tmp"),
                 workspace("w2", "dir: tmp", WorkspaceKind::Dir, "/tmp"),
@@ -1041,7 +1104,7 @@ mod tests {
     fn close_target_matches_entry_kind() {
         let mut app = App::new(Config::default(), Theme::load(false));
         app.path_to_workspaces.insert(
-            "/tmp".into(),
+            canonical_str(Path::new("/tmp")).unwrap(),
             vec![
                 workspace("w1", "project: tmp", WorkspaceKind::Project, "/tmp"),
                 workspace("w2", "dir: tmp", WorkspaceKind::Dir, "/tmp"),

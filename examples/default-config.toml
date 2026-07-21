@@ -38,9 +38,14 @@ preview = true
 # entries expand to a second full-path line. Set false for the compact list.
 detailed_rows = true
 
-# Check GitHub releases in the background at most once per day. Network errors
-# are ignored; a newer version appears as a badge in the Navigator header.
-check_updates = true
+# Keep release checks opt-in so executable updates remain reviewed.
+check_updates = false
+
+# Protect running processes from an accidental Ctrl-X.
+confirm_close_workspace = true
+
+# Avoid rescanning filesystem roots on every persistent-pane refresh.
+root_cache_seconds = 60
 
 # Optional Herdr Plus project filename. Alt-Enter applies its tabs/panes to the
 # selected zoxide/root dir, appending new tabs if its workspace already exists.
@@ -114,10 +119,14 @@ inherit_herdr = true
 [[roots]]
 path = "~/workspace"
 max_depth = 3
+exclude = ["node_modules", "target", "vendor", ".venv", "dist", "build"]
+follow_symlinks = false
 
 [[roots]]
 path = "~/projects"
 max_depth = 3
+exclude = ["node_modules", "target", "vendor", ".venv", "dist", "build"]
+follow_symlinks = false
 
 # Optional agent aliases. All match fields are optional and matched as text contains.
 # Aliases become extra search terms for matching agent panes.
@@ -148,6 +157,10 @@ local = true
 # enabled = true
 # collect = "bookmarks list --json"
 # open = "bookmarks open {{id}}"
+# Bound discovery commands so hung or noisy tools cannot block Navigator.
+# collect_timeout_ms = 5000
+# open_timeout_ms = 0
+# max_output_bytes = 1048576
 # notify_success = true
 # notify_error = true
 #

@@ -9,7 +9,9 @@ source_priority_boost = 5
 agent_sort = "herdr" # herdr | priority | spaces
 preview = true
 detailed_rows = true
-check_updates = true
+check_updates = false
+confirm_close_workspace = true
+root_cache_seconds = 60
 # directory_template = "default.toml"
 # directory_template_key = "alt-enter"
 
@@ -41,10 +43,14 @@ inherit_herdr = true
 [[roots]]
 path = "~/workspace"
 max_depth = 3
+exclude = ["node_modules", "target", "vendor", ".venv", "dist", "build"]
+follow_symlinks = false
 
 [[roots]]
 path = "~/projects"
 max_depth = 3
+exclude = ["node_modules", "target", "vendor", ".venv", "dist", "build"]
+follow_symlinks = false
 
 # [[agent_aliases]]
 # alias = "main ai dot"

@@ -9,8 +9,8 @@ use std::{
 use crate::{herdr::run_herdr, paths::plugin_config_dir};
 
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
-const PLUGIN_SOURCE: &str = "thanhdat77/herdr-navigator";
-const RELEASE_REPO: &str = "https://github.com/thanhdat77/herdr-navigator.git";
+const PLUGIN_SOURCE: &str = "vudx00/herdr-navigator";
+const RELEASE_REPO: &str = "https://github.com/vudx00/herdr-navigator.git";
 const CACHE_SECONDS: u64 = 86_400;
 
 pub(crate) fn check_in_background() -> Receiver<Option<String>> {
@@ -39,14 +39,8 @@ fn check_for_update() -> Option<String> {
 pub(crate) fn install(version: &str) -> Result<(), String> {
     let release =
         release_ref(version).ok_or_else(|| format!("invalid release version: {version}"))?;
-    run_herdr([
-        "plugin",
-        "install",
-        PLUGIN_SOURCE,
-        "--ref",
-        &release,
-        "--yes",
-    ])
+    // Keep Herdr's review prompt because updates build executable source.
+    run_herdr(["plugin", "install", PLUGIN_SOURCE, "--ref", &release])
 }
 
 fn release_ref(version: &str) -> Option<String> {
