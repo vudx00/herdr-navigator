@@ -4,6 +4,26 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-07-21
+
+### Changed
+- Filtering no longer canonicalizes entry paths from the sort comparator or the
+  row renderer, removing tens of thousands of syscalls per keystroke on large
+  pickers (3000 entries: 244 ms -> 0.5 ms per keystroke).
+- Sources are collected concurrently, so startup costs the slowest collector
+  instead of their sum (measured 105-156 ms -> 41 ms).
+- The agent sort order and Herdr source ranks resolve once per run rather than
+  re-reading and re-parsing config on every keystroke.
+- Root scanning answers "is this a project?" from the directory listing it
+  already reads, instead of probing each marker file separately.
+
+### Fixed
+- Unmarking an entry no longer jumps the cursor to the top of the list.
+- A root scanned at shallow depth no longer truncates a deeper overlapping root,
+  which silently hid projects.
+- An invalid `config.toml` is reported instead of silently falling back to
+  defaults.
+
 ## [0.4.0] - 2026-07-21
 
 ### Added
