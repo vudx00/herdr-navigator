@@ -1,6 +1,6 @@
 use std::{
     cell::OnceCell,
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     fs,
     path::{Path, PathBuf},
     process::Command,
@@ -275,9 +275,11 @@ pub(crate) fn collect_zoxide() -> Vec<Entry> {
         .collect()
 }
 
+const PROJECT_MARKERS: [&str; 3] = [".git", "package.json", "Cargo.toml"];
+
 pub(crate) fn collect_roots(config: &Config) -> Vec<Entry> {
     let mut out = Vec::new();
-    let mut visited = HashSet::new();
+    let mut visited = HashMap::new();
     for root in &config.roots {
         walk_dirs(
             &expand_path(&root.path),
@@ -291,25 +293,56 @@ pub(crate) fn collect_roots(config: &Config) -> Vec<Entry> {
     out
 }
 
+/// `visited` maps a directory to the most depth any walk has had left to spend
+/// there, so overlapping roots re-walk rather than truncate each other.
 fn walk_dirs(
     path: &Path,
     depth: usize,
     excludes: &[String],
     follow_symlinks: bool,
-    visited: &mut HashSet<PathBuf>,
+    visited: &mut HashMap<PathBuf, usize>,
     out: &mut Vec<Entry>,
 ) {
-    if depth == 0 || !path.is_dir() {
+    if depth == 0 {
         return;
     }
-    let canonical = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    if !visited.insert(canonical) {
+    // Only symlink traversal can reach one directory by two routes, so the
+    // canonicalize syscall is worth paying only then.
+    let key = if follow_symlinks {
+        fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+    } else {
+        path.to_path_buf()
+    };
+    if visited.get(&key).is_some_and(|walked| *walked >= depth) {
         return;
     }
-    if path.join(".git").exists()
-        || path.join("package.json").exists()
-        || path.join("Cargo.toml").exists()
-    {
+    visited.insert(key, depth);
+
+    // One `read_dir` answers both "is this a project?" and "what do I recurse
+    // into?"; probing each marker with `exists` costs a syscall apiece.
+    let Ok(read) = fs::read_dir(path) else {
+        return;
+    };
+    let mut children = Vec::new();
+    let mut is_project = false;
+    for entry in read.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        is_project |= PROJECT_MARKERS.contains(&name);
+        if name.starts_with('.') || excludes.iter().any(|excluded| excluded == name) {
+            continue;
+        }
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_dir() || (follow_symlinks && file_type.is_symlink()) {
+            children.push(entry.path());
+        }
+    }
+
+    if is_project {
         out.push(Entry {
             source: Source::Root,
             title: basename(path),
@@ -325,26 +358,8 @@ fn walk_dirs(
             canonical_key: OnceCell::new(),
         });
     }
-    if let Ok(read) = fs::read_dir(path) {
-        for entry in read.flatten() {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if name.starts_with('.') || excludes.iter().any(|excluded| excluded == &name) {
-                continue;
-            }
-            let Ok(file_type) = entry.file_type() else {
-                continue;
-            };
-            if file_type.is_dir() || (follow_symlinks && file_type.is_symlink()) {
-                walk_dirs(
-                    &entry.path(),
-                    depth - 1,
-                    excludes,
-                    follow_symlinks,
-                    visited,
-                    out,
-                );
-            }
-        }
+    for child in children {
+        walk_dirs(&child, depth - 1, excludes, follow_symlinks, visited, out);
     }
 }
 
@@ -405,6 +420,43 @@ mod tests {
 
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].title, "project");
+    }
+
+    #[test]
+    fn a_shallow_root_does_not_truncate_a_deeper_overlapping_root() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("herdr-root-depth-{suffix}"));
+        let nested = root.join("outer/inner");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(nested.join("Cargo.toml"), "[package]").unwrap();
+
+        let shallow_first = |max_depth: usize| crate::config::RootConfig {
+            path: root.join("outer").display().to_string(),
+            max_depth,
+            exclude: vec![],
+            follow_symlinks: false,
+        };
+        let mut config = Config::default();
+        // The shallow root reaches `outer` first with no depth left for `inner`.
+        config.roots = vec![
+            shallow_first(1),
+            crate::config::RootConfig {
+                path: root.display().to_string(),
+                max_depth: 4,
+                exclude: vec![],
+                follow_symlinks: false,
+            },
+        ];
+        let entries = collect_roots(&config);
+        fs::remove_dir_all(root).unwrap();
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].title, "inner");
     }
 
     #[test]

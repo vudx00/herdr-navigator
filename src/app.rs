@@ -111,6 +111,7 @@ pub(crate) struct App {
     pub(crate) spinner_tick: u32,
     pub(crate) update_available: Option<String>,
     pub(crate) agent_sort: AgentSort,
+    pub(crate) animate_spinner: bool,
 }
 
 impl App {
@@ -136,6 +137,7 @@ impl App {
             pinned_entries: HashSet::new(),
             spinner_tick: 0,
             update_available: None,
+            animate_spinner: false,
         }
     }
 
@@ -215,6 +217,7 @@ impl App {
         push_unique(&mut entries, &mut seen, collected.integrations);
 
         self.search_haystacks = entries.iter().map(Entry::haystack).collect();
+        self.animate_spinner = crate::tui::has_working_entry(&entries);
         self.entries = entries;
         self.pinned_entries =
             read_pinned_entries(&plugin_config_dir().join(PINNED_ENTRIES_STATE_FILE))

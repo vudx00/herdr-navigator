@@ -434,14 +434,30 @@ impl Config {
         if !path.exists() {
             let _ = fs::write(&path, DEFAULT_CONFIG);
         }
-        let mut config: Self = fs::read_to_string(path)
-            .ok()
-            .and_then(|s| toml::from_str(&s).ok())
-            .unwrap_or_default();
+        let mut config = match fs::read_to_string(path) {
+            Ok(source) => Self::parse_or_report(&source),
+            Err(_) => Self::default(),
+        };
         if let Some(prefix) = herdr_ctrl_prefix() {
             config.avoid_default_prefix_conflict(prefix);
         }
         config
+    }
+
+    /// A silent fallback to defaults reads as "my settings do nothing", so say
+    /// why. Reported against default notification settings — the ones that
+    /// would have configured this are the ones that failed to parse.
+    fn parse_or_report(source: &str) -> Self {
+        match toml::from_str(source) {
+            Ok(config) => config,
+            Err(error) => {
+                let fallback = Self::default();
+                let message = format!("Invalid config.toml, using defaults: {error}");
+                eprintln!("{message}");
+                crate::herdr::notify_error(&message, &fallback.notifications);
+                fallback
+            }
+        }
     }
 
     fn avoid_default_prefix_conflict(&mut self, prefix: char) {

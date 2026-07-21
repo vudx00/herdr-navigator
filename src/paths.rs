@@ -1,6 +1,7 @@
 use std::{
     env, fs, io,
     path::{Path, PathBuf},
+    sync::OnceLock,
 };
 
 pub(crate) fn plugin_config_dir() -> PathBuf {
@@ -37,10 +38,16 @@ pub(crate) fn herdr_plus_projects_dir() -> PathBuf {
 pub(crate) fn herdr_plus_quick_actions_dir() -> PathBuf {
     home().join(".config/herdr/plugins/config/cloudmanic.herdr-plus/quick-actions")
 }
+/// Cached: `HOME` is fixed for the process, and the row renderer asks for it
+/// once per visible path per frame.
 pub(crate) fn home() -> PathBuf {
-    env::var("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("/"))
+    static HOME: OnceLock<PathBuf> = OnceLock::new();
+    HOME.get_or_init(|| {
+        env::var("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("/"))
+    })
+    .clone()
 }
 pub(crate) fn expand_path(s: &str) -> PathBuf {
     if let Some(rest) = s.strip_prefix("~/") {

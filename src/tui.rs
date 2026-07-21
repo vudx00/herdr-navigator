@@ -48,7 +48,7 @@ pub(crate) fn tui_loop(
             }
         }
         terminal.draw(|f| draw(f, app))?;
-        let animate = has_working_entry(app);
+        let animate = app.animate_spinner;
         if (animate || update_check.is_some()) && !event::poll(Duration::from_millis(125))? {
             if animate {
                 app.spinner_tick = app.spinner_tick.wrapping_add(1);
@@ -455,8 +455,10 @@ fn draw_keybindings_help(f: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-fn has_working_entry(app: &App) -> bool {
-    app.entries.iter().filter_map(entry_status).any(|status| {
+/// Whether any row needs the spinner animated. Entries only change on refresh,
+/// so this is resolved there rather than on every 125 ms tick.
+pub(crate) fn has_working_entry(entries: &[Entry]) -> bool {
+    entries.iter().filter_map(entry_status).any(|status| {
         let status = status.to_lowercase();
         status.contains("work") || status.contains("run")
     })
