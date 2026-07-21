@@ -4,6 +4,21 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-07-21
+
+### Changed
+- Workspaces created from a zoxide or root directory are labelled with the
+  directory name instead of `dir: <name>`. Herdr Plus projects keep their
+  `project:` prefix, which is what distinguishes the two kinds at the same cwd.
+- The picker no longer draws its own border and title. Herdr already frames and
+  titles the plugin pane, so this rendered as a box inside a box; the update
+  badge moved to the query row.
+
+### Fixed
+- Selecting a directory whose workspace Herdr created itself now focuses that
+  workspace instead of opening a duplicate. Externally created workspaces carry
+  no label prefix, so Navigator previously could not match them.
+
 ## [0.4.1] - 2026-07-21
 
 ### Changed

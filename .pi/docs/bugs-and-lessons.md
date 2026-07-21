@@ -85,3 +85,24 @@ Root cause: picker used `canonical_path -> workspace_id`, losing workspace multi
 Fix: store `canonical_path -> Vec<WorkspaceRef>`, infer workspace kind from labels (`project:` / `dir:`), do source-specific reuse, and keep workspace rows unique by workspace id.
 
 Lesson: in Herdr, same cwd does not mean same workspace. Picker identity must include workspace id and source/kind.
+
+## Dir workspace labels no longer carry a `dir:` prefix
+
+Symptom: workspaces created from a zoxide/root directory showed up in Herdr as
+`dir: loom-proxy`. The prefix was internal bookkeeping leaking into the UI.
+
+Root cause: `workspace_kind()` infers kind from the label, because
+`workspace list` exposes no metadata field to carry it (`workspace
+report-metadata` tokens are not returned there).
+
+Fix: drop the prefix for directory workspaces and treat an unprefixed
+workspace as a directory workspace. Project workspaces keep `project:`, so the
+two kinds stay distinguishable — that prefix is what does the real work.
+
+This also fixed reuse for workspaces Herdr created itself: those are unprefixed
+too, so Navigator used to miss them and open a duplicate for a directory that
+was already open.
+
+Lesson: only `project:` is load-bearing. If the `project:` prefix is ever
+dropped as well, kind has to be tracked outside the label (a state file keyed
+by workspace id) or same-cwd project/dir entries will steal each other again.

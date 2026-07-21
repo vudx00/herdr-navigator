@@ -11,6 +11,14 @@ use crate::{config::NotificationsConfig, paths::expand_path};
 pub(crate) fn herdr_bin() -> String {
     env::var("HERDR_BIN_PATH").unwrap_or_else(|_| "herdr".into())
 }
+
+/// Serializes tests that swap `HERDR_BIN_PATH` for a stub, since the
+/// environment is process-wide and tests run in parallel.
+#[cfg(test)]
+pub(crate) fn bin_path_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 pub(crate) fn herdr_json<const N: usize>(args: [&str; N]) -> Result<Value, String> {
     let out = Command::new(herdr_bin())
         .args(args)

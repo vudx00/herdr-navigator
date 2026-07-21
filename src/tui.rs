@@ -277,22 +277,9 @@ fn execute_command(app: &mut App, command: Command, key: KeyEvent) -> Action {
 fn draw(f: &mut Frame, app: &App) {
     let area = f.area();
     f.render_widget(Clear, area);
-    let mut outer = Block::default()
-        .style(Style::default().bg(app.theme.panel_bg))
-        .title(" Herdr Navigator ")
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(app.theme.accent));
-    if let Some(version) = &app.update_available {
-        outer = outer.title_top(
-            Line::from(Span::styled(
-                format!(" ↑ v{version} available · F5 update "),
-                Style::default()
-                    .fg(app.theme.yellow)
-                    .add_modifier(Modifier::BOLD),
-            ))
-            .right_aligned(),
-        );
-    }
+    // Herdr already frames and titles the plugin pane; a second border here
+    // renders as a box inside a box.
+    let outer = Block::default().style(Style::default().bg(app.theme.panel_bg));
     let inner = outer.inner(area);
     f.render_widget(outer, area);
 
@@ -310,6 +297,21 @@ fn draw(f: &mut Frame, app: &App) {
         .as_ref()
         .map(|s| s.label())
         .unwrap_or("all");
+    let mut query_block = Block::default()
+        .style(Style::default().bg(app.theme.panel_bg))
+        .borders(Borders::BOTTOM);
+    // The badge used to ride on the outer border's title.
+    if let Some(version) = &app.update_available {
+        query_block = query_block.title_top(
+            Line::from(Span::styled(
+                format!(" ↑ v{version} available · F5 update "),
+                Style::default()
+                    .fg(app.theme.yellow)
+                    .add_modifier(Modifier::BOLD),
+            ))
+            .right_aligned(),
+        );
+    }
     let search = Paragraph::new(Line::from(vec![
         Span::styled("query ", Style::default().fg(app.theme.overlay0)),
         Span::styled(
@@ -324,11 +326,7 @@ fn draw(f: &mut Frame, app: &App) {
             Style::default().fg(app.theme.accent),
         ),
     ]))
-    .block(
-        Block::default()
-            .style(Style::default().bg(app.theme.panel_bg))
-            .borders(Borders::BOTTOM),
-    );
+    .block(query_block);
     f.render_widget(search, rows[0]);
 
     let body = if app.preview {

@@ -556,7 +556,7 @@ impl App {
                 "--cwd",
                 &path.display().to_string(),
                 "--label",
-                &format!("dir: {label}"),
+                label,
                 "--focus",
             ])?;
             return herdr_plus::bootstrap_project_tabs(&template, &json, path);
@@ -576,7 +576,7 @@ impl App {
             "--cwd",
             &path.display().to_string(),
             "--label",
-            &format!("dir: {label}"),
+            label,
             "--focus",
         ])
     }
@@ -598,11 +598,20 @@ impl App {
         self.matching_dir_workspace_by_key(e.key())
     }
 
+    /// Project workspaces keep their `project:` label prefix, so an unprefixed
+    /// workspace at this path is a directory workspace — whether Navigator or
+    /// Herdr itself created it. Matching those too is what stops a second
+    /// workspace being created for a directory that is already open.
     fn matching_dir_workspace_by_key(&self, key: &str) -> Option<&WorkspaceRef> {
-        self.path_to_workspaces
-            .get(key)?
+        let workspaces = self.path_to_workspaces.get(key)?;
+        workspaces
             .iter()
             .find(|ws| ws.kind == WorkspaceKind::Dir)
+            .or_else(|| {
+                workspaces
+                    .iter()
+                    .find(|ws| ws.kind == WorkspaceKind::Unknown)
+            })
     }
 
     fn matching_template_workspace_by_key(&self, key: &str) -> Option<&WorkspaceRef> {
@@ -1198,6 +1207,88 @@ mod tests {
         assert_eq!(
             app.matching_template_workspace_by_key("/tmp").unwrap().id,
             "w1"
+        );
+    }
+
+    #[test]
+    fn directory_workspaces_reuse_unprefixed_labels() {
+        let mut app = App::new(Config::default(), Theme::load(false));
+        let key = canonical_str(Path::new("/tmp")).unwrap();
+        // Herdr's own workspaces carry no `dir:`/`project:` prefix.
+        app.path_to_workspaces.insert(
+            key.clone(),
+            vec![workspace("w1", "tmp", WorkspaceKind::Unknown, "/tmp")],
+        );
+        let dir = entry(Source::Zoxide, "/tmp", "tmp");
+        assert_eq!(app.matching_dir_workspace(&dir).unwrap().id, "w1");
+
+        // An explicit dir workspace still wins over an unprefixed one.
+        app.path_to_workspaces.insert(
+            key,
+            vec![
+                workspace("w1", "tmp", WorkspaceKind::Unknown, "/tmp"),
+                workspace("w2", "dir: tmp", WorkspaceKind::Dir, "/tmp"),
+            ],
+        );
+        assert_eq!(app.matching_dir_workspace(&dir).unwrap().id, "w2");
+    }
+
+    #[test]
+    fn project_workspaces_are_not_reused_as_directory_workspaces() {
+        let mut app = App::new(Config::default(), Theme::load(false));
+        app.path_to_workspaces.insert(
+            canonical_str(Path::new("/tmp")).unwrap(),
+            vec![workspace(
+                "w1",
+                "project: tmp",
+                WorkspaceKind::Project,
+                "/tmp",
+            )],
+        );
+
+        let dir = entry(Source::Zoxide, "/tmp", "tmp");
+        assert!(
+            app.matching_dir_workspace(&dir).is_none(),
+            "the `project:` prefix is what keeps the two kinds apart"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn new_directory_workspaces_are_labelled_with_the_plain_directory_name() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _lock = crate::herdr::bin_path_lock();
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = env::temp_dir().join(format!("herdr-label-{suffix}"));
+        fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("calls");
+        let fake = dir.join("herdr");
+        fs::write(
+            &fake,
+            format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\n", log.display()),
+        )
+        .unwrap();
+        fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let previous = env::var_os("HERDR_BIN_PATH");
+        env::set_var("HERDR_BIN_PATH", &fake);
+        let app = App::new(Config::default(), Theme::load(false));
+        let result = app.focus_or_create_dir(Path::new("/tmp"), "loom-proxy", false);
+        let calls = fs::read_to_string(&log).unwrap_or_default();
+        match previous {
+            Some(path) => env::set_var("HERDR_BIN_PATH", path),
+            None => env::remove_var("HERDR_BIN_PATH"),
+        }
+        let _ = fs::remove_dir_all(dir);
+
+        result.unwrap();
+        assert_eq!(
+            calls.trim(),
+            "workspace create --cwd /tmp --label loom-proxy --focus"
         );
     }
 
