@@ -978,6 +978,31 @@ mod tests {
     }
 
     #[test]
+    fn alt_j_and_alt_k_move_selection_while_searching() {
+        let mut app = App::new(Config::default(), Theme::load(false));
+        app.entries = vec![
+            entry(Source::Zoxide, "alpha"),
+            entry(Source::Zoxide, "bravo"),
+        ];
+        app.apply_filter();
+        app.input_mode = InputMode::Search;
+
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('j'), KeyModifiers::ALT),
+        );
+        assert_eq!(app.selected, 1);
+        assert!(app.query.is_empty());
+
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('k'), KeyModifiers::ALT),
+        );
+        assert_eq!(app.selected, 0);
+        assert!(app.query.is_empty());
+    }
+
+    #[test]
     fn update_badge_renders_action_and_f5_triggers_it() {
         let mut app = App::new(Config::default(), Theme::load(false));
         assert!(matches!(

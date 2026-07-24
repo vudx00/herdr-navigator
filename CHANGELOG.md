@@ -4,6 +4,15 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+### Added
+- Alt-J and Alt-K move down and up alongside the arrow keys, including while
+  typing a search query.
+
+### Fixed
+- Fuzzy matching now scores each visible entry field independently, preventing
+  matches that span unrelated title/path fields and prioritizing exact names
+  and shorter matching paths consistently across all search engines.
+
 ## [0.4.2] - 2026-07-21
 
 ### Changed

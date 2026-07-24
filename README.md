@@ -118,7 +118,7 @@ Every source can be disabled. Missing optional tools degrade quietly.
 | type | Fuzzy search |
 | `Enter` | Open selected item normally |
 | `Alt-Enter` | Apply `picker.directory_template` to the selected zoxide/root directory |
-| `Up` / `Down` | Move selection |
+| `Up` / `Down` or `Alt-K` / `Alt-J` | Move selection |
 | `Tab` | Cycle source filters |
 | `Ctrl-W` | Workspaces |
 | `Ctrl-A` / `@` | Agents; a conflicting Herdr prefix is remapped automatically |

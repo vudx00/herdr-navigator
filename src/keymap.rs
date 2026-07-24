@@ -112,7 +112,7 @@ impl Keybind {
         let label = self.compact_label?;
         let key = match &self.command {
             Command::MoveDown if app.config.picker.vim_mode => "j/k".into(),
-            Command::MoveDown => "↑/↓".into(),
+            Command::MoveDown => "↑/↓/⌥J/K".into(),
             Command::Filter(_) if app.config.picker.vim_mode => self
                 .keys
                 .iter()
@@ -191,6 +191,7 @@ pub(crate) fn keybindings(app: &App) -> Vec<Keybind> {
             Command::MoveUp,
             vec![
                 key(KeyCode::Up, KeyModifiers::NONE, "↑"),
+                key(KeyCode::Char('k'), KeyModifiers::ALT, "⌥K"),
                 vim_key(KeyCode::Char('k'), "k"),
             ],
             "move up",
@@ -201,6 +202,7 @@ pub(crate) fn keybindings(app: &App) -> Vec<Keybind> {
             Command::MoveDown,
             vec![
                 key(KeyCode::Down, KeyModifiers::NONE, "↓"),
+                key(KeyCode::Char('j'), KeyModifiers::ALT, "⌥J"),
                 vim_key(KeyCode::Char('j'), "j"),
             ],
             "move down",

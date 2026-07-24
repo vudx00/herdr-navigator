@@ -211,7 +211,10 @@ mod tests {
         .unwrap();
 
         assert_eq!(entry.source, Source::Server);
-        assert!(entry.haystack().contains("prod-box"));
+        assert!(entry
+            .search_fields()
+            .iter()
+            .any(|field| field.contains("prod-box")));
         assert!(matches!(
             entry.action,
             EntryAction::OpenRemote { ref target } if target == "prod-box"

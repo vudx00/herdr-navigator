@@ -87,16 +87,62 @@ fn joined<T: Default>(handle: Option<thread::ScopedJoinHandle<'_, T>>) -> T {
 struct Candidate {
     index: usize,
     score: i64,
+    match_quality: u8,
+    field_rank: usize,
+    path_len: usize,
     source_rank: usize,
     previous_pinned: bool,
     user_pinned: bool,
+}
+#[derive(Clone, Copy)]
+struct SearchMatch {
+    score: i64,
+    quality: u8,
+    field_rank: usize,
+}
+
+fn best_search_match(
+    matcher: &mut SearchMatcher,
+    query: &str,
+    fields: &[String],
+) -> Option<SearchMatch> {
+    let mut best: Option<SearchMatch> = None;
+    for (field_rank, field) in fields.iter().enumerate() {
+        let Some(score) = matcher.score(field) else {
+            continue;
+        };
+        let quality = if field == query {
+            3
+        } else if field.starts_with(query) {
+            2
+        } else if field.contains(query) {
+            1
+        } else {
+            0
+        };
+        let candidate = SearchMatch {
+            score,
+            quality,
+            field_rank,
+        };
+        if best.as_ref().is_none_or(|current| {
+            candidate.quality > current.quality
+                || (candidate.quality == current.quality
+                    && (candidate.field_rank < current.field_rank
+                        || (candidate.field_rank == current.field_rank
+                            && candidate.score > current.score)))
+        }) {
+            best = Some(candidate);
+        }
+    }
+    best
 }
 
 pub(crate) struct App {
     pub(crate) config: Config,
     pub(crate) theme: Theme,
     pub(crate) entries: Vec<Entry>,
-    search_haystacks: Vec<String>,
+    search_fields: Vec<Vec<String>>,
     root_cache: Option<(Instant, Vec<Entry>)>,
     pub(crate) filtered: Vec<usize>,
     pub(crate) filtered_scores: Vec<i64>,
@@ -123,7 +169,7 @@ impl App {
             config,
             theme,
             entries: vec![],
-            search_haystacks: vec![],
+            search_fields: vec![],
             root_cache: None,
             filtered: vec![],
             filtered_scores: vec![],
@@ -216,7 +262,7 @@ impl App {
         }
         push_unique(&mut entries, &mut seen, collected.integrations);
 
-        self.search_haystacks = entries.iter().map(Entry::haystack).collect();
+        self.search_fields = entries.iter().map(Entry::search_fields).collect();
         self.animate_spinner = crate::tui::has_working_entry(&entries);
         self.entries = entries;
         self.pinned_entries =
@@ -275,23 +321,32 @@ impl App {
             let source_rank = source_ranks[entry.source.index()];
             let bonus = self.config.picker.bonus_for_rank(source_rank)
                 + query.score_bonus(entry, use_agent_priority);
-            let score = match matcher.as_mut() {
+            let (score, match_quality, field_rank) = match matcher.as_mut() {
                 Some(matcher) => {
-                    // Tests assign `entries` without haystacks; score those directly.
-                    let scored = match self.search_haystacks.get(index) {
-                        Some(haystack) => matcher.score(haystack),
-                        None => matcher.score(&entry.haystack()),
+                    // Tests assign `entries` without cached fields; derive those directly.
+                    let fallback;
+                    let fields = match self.search_fields.get(index) {
+                        Some(fields) => fields.as_slice(),
+                        None => {
+                            fallback = entry.search_fields();
+                            fallback.as_slice()
+                        }
                     };
-                    match scored {
-                        Some(score) => score + bonus,
+                    match best_search_match(matcher, &query.plain, fields) {
+                        Some(matched) => {
+                            (matched.score + bonus, matched.quality, matched.field_rank)
+                        }
                         None => continue,
                     }
                 }
-                None => bonus,
+                None => (bonus, 0, usize::MAX),
             };
             candidates.push(Candidate {
                 index,
                 score,
+                match_quality,
+                field_rank,
+                path_len: entry.path.as_os_str().len(),
                 source_rank,
                 previous_pinned: pin_previous
                     && entry.source == Source::Workspace
@@ -304,7 +359,16 @@ impl App {
             b.previous_pinned
                 .cmp(&a.previous_pinned)
                 .then_with(|| b.user_pinned.cmp(&a.user_pinned))
+                .then_with(|| b.match_quality.cmp(&a.match_quality))
+                .then_with(|| a.field_rank.cmp(&b.field_rank))
                 .then_with(|| b.score.cmp(&a.score))
+                .then_with(|| {
+                    if empty_query {
+                        std::cmp::Ordering::Equal
+                    } else {
+                        a.path_len.cmp(&b.path_len)
+                    }
+                })
                 .then_with(|| a.source_rank.cmp(&b.source_rank))
                 .then_with(|| {
                     if agent_view {
@@ -1011,7 +1075,56 @@ mod tests {
 
     #[test]
     fn agent_aliases_are_searchable_plain_text() {
-        assert!(agent_entry().haystack().contains("main ai dot"));
+        assert!(agent_entry()
+            .search_fields()
+            .iter()
+            .any(|field| field.contains("main ai dot")));
+    }
+
+    #[test]
+    fn search_prefers_exact_title_then_shorter_matching_paths() {
+        for engine in ["nucleo", "skim", "simple"] {
+            let mut app = App::new(Config::default(), Theme::load(false));
+            app.config.picker.engine = engine.into();
+            app.entries = vec![
+                entry(Source::Zoxide, "/opt/work/align", "align"),
+                entry(Source::Zoxide, "/opt/work/atredis", "atredis"),
+                entry(Source::Zoxide, "/opt/work", "work"),
+            ];
+            app.query = "work".into();
+
+            app.apply_filter();
+
+            let paths = app
+                .filtered
+                .iter()
+                .map(|index| app.entries[*index].path.as_path())
+                .collect::<Vec<_>>();
+            assert_eq!(paths[0], Path::new("/opt/work"), "{engine}");
+            assert_eq!(paths[1], Path::new("/opt/work/align"), "{engine}");
+        }
+    }
+
+    #[test]
+    fn search_does_not_fuzzy_match_across_unrelated_fields() {
+        for engine in ["nucleo", "skim", "simple"] {
+            let mut app = App::new(Config::default(), Theme::load(false));
+            app.config.picker.engine = engine.into();
+            app.entries = vec![
+                entry(
+                    Source::Root,
+                    "/Projects/ruby/pickaxe/tut_containers/word_freq",
+                    "word_freq",
+                ),
+                entry(Source::Zoxide, "/opt/work", "work"),
+            ];
+            app.query = "work".into();
+
+            app.apply_filter();
+
+            assert_eq!(app.filtered.len(), 1, "{engine}");
+            assert_eq!(app.selected_entry().unwrap().title, "work", "{engine}");
+        }
     }
 
     #[test]

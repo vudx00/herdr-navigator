@@ -177,17 +177,35 @@ impl Entry {
             .unwrap_or_else(|| self.source.label())
     }
 
-    pub(crate) fn haystack(&self) -> String {
-        format!(
-            "{} {} {} {} {} {}",
-            self.source_name(),
-            self.title,
-            self.subtitle,
-            self.workspace_label.as_deref().unwrap_or(""),
-            self.path.display(),
-            self.search_terms.join(" ")
-        )
-        .to_lowercase()
+    pub(crate) fn search_fields(&self) -> Vec<String> {
+        fn push(fields: &mut Vec<String>, value: &str) {
+            if value.is_empty() {
+                return;
+            }
+            let value = value.to_lowercase();
+            if !fields.contains(&value) {
+                fields.push(value);
+            }
+        }
+
+        let mut fields = Vec::with_capacity(6 + self.search_terms.len());
+        push(&mut fields, &self.title);
+        if let Some(name) = self.path.file_name().and_then(|name| name.to_str()) {
+            push(&mut fields, name);
+        }
+        push(&mut fields, &self.path.to_string_lossy());
+        for component in self.path.components() {
+            push(&mut fields, &component.as_os_str().to_string_lossy());
+        }
+        push(&mut fields, &self.subtitle);
+        if let Some(label) = self.workspace_label.as_deref() {
+            push(&mut fields, label);
+        }
+        push(&mut fields, self.source_name());
+        for term in &self.search_terms {
+            push(&mut fields, term);
+        }
+        fields
     }
 }
 
