@@ -28,3 +28,38 @@ Verified:
 - The Alt+J/Alt+K handler regression failed before the binding and passes afterward in search mode.
 - `cargo fmt --check`, 82 tests, strict Clippy, and `cargo build` pass.
 - `cargo run --quiet -- list` starts the production binary and collects the live Navigator sources successfully.
+
+---
+
+# Herdr Pane Alt Navigation Override
+
+## Plan
+
+- [x] Confirm Herdr intercepts direct `Alt-J`/`Alt-K` focus bindings before forwarding input to normal panes.
+- [x] Confirm plugin popups receive terminal input before Herdr evaluates global pane-navigation bindings.
+- [x] Change the main Navigator entrypoint from a normal overlay pane to a full-size modal popup.
+- [x] Require the oldest Herdr release that supports plugin popups.
+- [x] Remove obsolete overlay focus/reuse code and update regression coverage.
+- [x] Record the correction lesson and update user-facing documentation.
+- [x] Validate the linked manifest, open/close the popup, and exercise Alt navigation.
+- [x] Run formatting, tests, strict Clippy, and release build.
+- [x] Commit, merge, push, clean up, and relink the installed plugin.
+
+## Review
+
+Root cause: Herdr evaluates direct pane-focus bindings before forwarding keys to normal overlay, split, tab, or zoomed panes. The prior TUI test proved Navigator handled Alt-J/Alt-K only after receipt; it did not prove the host delivered those events.
+
+Implemented:
+
+- Changed the main `picker` manifest entrypoint to a 100% by 100% modal plugin popup, which Herdr routes before global direct bindings.
+- Raised `min_herdr_version` to 0.7.4, the first release with plugin popup placement.
+- Removed obsolete overlay-pane discovery/focus logic; the persistent side picker remains a normal split.
+- Added a parsed-manifest regression and recorded the host-routing lesson.
+
+Verified:
+
+- The popup manifest regression failed before the fix and passes afterward.
+- The existing Alt-J/Alt-K search-mode regression passes.
+- Herdr 0.7.5 accepted and linked the popup manifest with no reload diagnostics.
+- The installed `herdr-navigator.open` action launched the modal popup successfully; it remained active until manually closed.
+- `cargo fmt --check`, 82 tests, strict Clippy, and the release build pass.

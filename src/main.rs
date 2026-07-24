@@ -36,15 +36,9 @@ fn main() {
     }
 }
 
-// Must match the pane `title` values in herdr-plugin.toml; Herdr exposes them
-// as labels in `pane list`.
-const PICKER_PANE_LABEL: &str = "Herdr Navigator";
+// Must match the side pane `title` in herdr-plugin.toml; Herdr exposes it as a
+// label in `pane list`.
 const SIDE_PANE_LABEL: &str = "Navigator Side";
-
-enum PickerDecision {
-    Open,
-    Focus(String),
-}
 
 enum SideDecision {
     Open,
@@ -70,19 +64,10 @@ fn pane_in_focused_workspace<'a>(
     Some((focused, target))
 }
 
-fn picker_pane_decision(pane_json: &serde_json::Value) -> PickerDecision {
-    pane_in_focused_workspace(pane_json, PICKER_PANE_LABEL)
-        .and_then(|(_, picker)| picker.get("pane_id")?.as_str())
-        .map(|id| PickerDecision::Focus(id.into()))
-        .unwrap_or(PickerDecision::Open)
-}
-
 fn open_picker() -> ! {
-    let json = herdr::herdr_json(["pane", "list"]).unwrap_or(serde_json::Value::Null);
-    match picker_pane_decision(&json) {
-        PickerDecision::Open => open_plugin_pane("picker", &["--focus"]),
-        PickerDecision::Focus(id) => run_plugin_pane_cmd("focus", &id),
-    }
+    // Popup panes receive terminal input before Herdr evaluates global direct
+    // bindings, so Navigator owns Alt-J/Alt-K even when they focus host panes.
+    open_plugin_pane("picker", &[])
 }
 
 // Launch-or-focus, toggle on repeat — same UX as herdr-file-viewer's side pane,
@@ -198,29 +183,26 @@ mod tests {
     }
 
     #[test]
-    fn overlay_picker_opens_once_then_focuses_existing() {
-        let no_picker = pane_list(vec![pane("w1:p1", "w1", None, true)]);
-        assert!(matches!(
-            picker_pane_decision(&no_picker),
-            PickerDecision::Open
-        ));
-
-        let existing_picker = pane_list(vec![
-            pane("w1:p1", "w1", None, true),
-            pane("w1:p2", "w1", Some(PICKER_PANE_LABEL), false),
-        ]);
-        assert!(
-            matches!(picker_pane_decision(&existing_picker), PickerDecision::Focus(id) if id == "w1:p2")
+    fn main_picker_uses_full_size_modal_popup() {
+        let manifest = include_str!("../herdr-plugin.toml")
+            .parse::<toml::Value>()
+            .expect("valid plugin manifest");
+        assert_eq!(
+            manifest["min_herdr_version"].as_str(),
+            Some("0.7.4"),
+            "popup plugin panes require Herdr 0.7.4+"
         );
-
-        let other_workspace = pane_list(vec![
-            pane("w1:p1", "w1", None, true),
-            pane("w2:p2", "w2", Some(PICKER_PANE_LABEL), false),
-        ]);
-        assert!(matches!(
-            picker_pane_decision(&other_workspace),
-            PickerDecision::Open
-        ));
+        let picker = manifest["panes"]
+            .as_array()
+            .and_then(|panes| {
+                panes
+                    .iter()
+                    .find(|pane| pane["id"].as_str() == Some("picker"))
+            })
+            .expect("picker pane");
+        assert_eq!(picker["placement"].as_str(), Some("popup"));
+        assert_eq!(picker["width"].as_str(), Some("100%"));
+        assert_eq!(picker["height"].as_str(), Some("100%"));
     }
 
     #[test]

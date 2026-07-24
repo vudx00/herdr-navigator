@@ -11,7 +11,7 @@
 <p align="center">
   <a href="https://github.com/vudx00/herdr-navigator/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/vudx00/herdr-navigator/actions/workflows/ci.yml/badge.svg" /></a>
   <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-2ea44f" /></a>
-  <img alt="Herdr 0.7.3+" src="https://img.shields.io/badge/Herdr-0.7.3%2B-66b3ff" />
+  <img alt="Herdr 0.7.4+" src="https://img.shields.io/badge/Herdr-0.7.4%2B-66b3ff" />
   <img alt="Linux and macOS" src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS-c084fc" />
 </p>
 
@@ -83,7 +83,7 @@ A single result list can move between live Herdr state and things that are not o
 | **Reuse first** | Existing workspaces are focused before new ones are created. Project and directory workspaces sharing a cwd keep separate identities. |
 | **Agents are first-class** | Search agent name, status, workspace, cwd, pane/tab/terminal IDs, session ID, and your own aliases. |
 | **Extensible without Rust** | Add another tool with a command that returns JSON and a command that opens the selected item. |
-| **No picker dependency** | The Rust/ratatui interface runs in a Herdr-managed pane; `fzf` and `tv` are not runtime requirements. |
+| **No picker dependency** | The Rust/ratatui interface runs in a Herdr-managed modal popup; `fzf` and `tv` are not runtime requirements. |
 
 Herdr's built-in navigation remains the simpler choice for a single entity type. Navigator is for the moment when “where next?” could mean a workspace, agent, path, session, remote, project, or action.
 
@@ -118,7 +118,7 @@ Every source can be disabled. Missing optional tools degrade quietly.
 | type | Fuzzy search |
 | `Enter` | Open selected item normally |
 | `Alt-Enter` | Apply `picker.directory_template` to the selected zoxide/root directory |
-| `Up` / `Down` or `Alt-K` / `Alt-J` | Move selection |
+| `Up` / `Down` or `Alt-K` / `Alt-J` | Move selection; the main modal picker overrides Herdr's direct pane-navigation bindings |
 | `Tab` | Cycle source filters |
 | `Ctrl-W` | Workspaces |
 | `Ctrl-A` / `@` | Agents; a conflicting Herdr prefix is remapped automatically |
@@ -134,6 +134,11 @@ Every source can be disabled. Missing optional tools degrade quietly.
 | `Ctrl-U` | Clear query and filter |
 | `?` | Show active keybindings |
 | `Esc` / `Ctrl-C` | Back or close |
+
+The main `Herdr Navigator` entrypoint is a modal plugin popup, so it receives
+Alt-J and Alt-K before Herdr evaluates global `focus_pane_down` and
+`focus_pane_up` bindings. The persistent `Navigator Side` entrypoint remains a
+normal split pane and therefore follows Herdr's normal host-binding precedence.
 
 Status glyphs follow Herdr's `prefix+g` visual language: `◉` blocked/attention, animated Braille spinner working, `●` idle, `✓` done, and `○` unknown. Diamond color priority is marked yellow, current accent/blue, then previous red. Selection uses `→`, and source trees use `▾`, `├─`, and `└─` markers.
 
@@ -287,7 +292,7 @@ Navigator shell-quotes `{{id}}`, `{{title}}`, `{{subtitle}}`, `{{path}}`, and `{
 
 ## Requirements
 
-- Herdr `0.7.3` or newer
+- Herdr `0.7.4` or newer
 - Linux or macOS
 - Optional: `zoxide` for directory history
 - Optional: Herdr Plus for project templates and Quick Actions

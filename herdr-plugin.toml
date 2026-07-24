@@ -1,7 +1,7 @@
 id = "herdr-navigator"
 name = "Herdr Navigator"
 version = "0.4.2"
-min_herdr_version = "0.7.3"
+min_herdr_version = "0.7.4"
 description = "Jump to any Herdr workspace, agent, project, session, remote, directory, or action from one fuzzy navigator."
 platforms = ["linux", "macos"]
 
@@ -29,7 +29,9 @@ command = ["./target/release/herdr-navigator", "jump-back"]
 [[panes]]
 id = "picker"
 title = "Herdr Navigator"
-placement = "overlay"
+placement = "popup"
+width = "100%"
+height = "100%"
 command = ["./target/release/herdr-navigator", "ui"]
 
 # Persistent side pane variant: stays open after Enter, toggled by the open-side

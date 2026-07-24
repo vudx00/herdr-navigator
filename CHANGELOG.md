@@ -12,6 +12,8 @@ All notable changes to this project are documented here.
 - Fuzzy matching now scores each visible entry field independently, preventing
   matches that span unrelated title/path fields and prioritizing exact names
   and shorter matching paths consistently across all search engines.
+- The main Navigator now opens as a full-size modal plugin popup, allowing its
+  Alt-J/Alt-K navigation to override Herdr's global pane-focus bindings.
 
 ## [0.4.2] - 2026-07-21
 
