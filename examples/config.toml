@@ -1,6 +1,11 @@
 # Backward-compatible example. Prefer examples/default-config.toml.
 
 [picker]
+# Rollout requests only. Merged presentation is unavailable; legacy stays active.
+presentation = "legacy" # legacy | merged
+# Reserved and inactive. These do not add commands or help hints yet.
+focus_cycle_key = "f6"
+refresh_key = "f8"
 reuse_existing = true
 create_missing = true
 engine = "nucleo" # nucleo | skim | simple
@@ -28,6 +33,9 @@ enabled = true
 pin_previous = true
 
 [sources]
+# Opt in to every pane on the routed server. false keeps agent-only pane rows.
+panes = false
+
 open_workspaces = true
 herdr_plus_projects = true
 zoxide = true

@@ -1,0 +1,409 @@
+{
+  "fixture_schema": "navigation-n01-v1",
+  "evidence": "synthetic-hypothetical",
+  "case_id": "six-workspaces-nine-panes",
+  "input": {
+    "machines": [
+      {
+        "owner": ["local", "session-local", "epoch-local-1"],
+        "label": "Local",
+        "relationship": "local",
+        "home": "/fixture/local",
+        "connection": "connected",
+        "workspaces": [
+          {
+            "id": "w1",
+            "label": "gemini-cyber",
+            "cwd": "/fixture/shared/gemini-cyber",
+            "tabs": [
+              {
+                "id": "w1:t1",
+                "label": "main",
+                "naming": "named",
+                "panes": [
+                  {
+                    "id": "w1:p1",
+                    "terminal_id": "term-0-w1-1",
+                    "ordinal": 1,
+                    "label": null,
+                    "cwd": "/fixture/shared/gemini-cyber",
+                    "revision": 1
+                  }
+                ]
+              },
+              {
+                "id": "w1:t2",
+                "label": "review",
+                "naming": "named",
+                "panes": [
+                  {
+                    "id": "w1:p2",
+                    "terminal_id": "term-0-w1-2",
+                    "ordinal": 2,
+                    "label": null,
+                    "cwd": "/fixture/shared/gemini-cyber",
+                    "revision": 1
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "w2",
+            "label": "fedramp-rt",
+            "cwd": "/fixture/shared/fedramp-rt",
+            "tabs": [
+              {
+                "id": "w2:t1",
+                "label": "1",
+                "naming": "unnamed",
+                "panes": [
+                  {
+                    "id": "w2:p1",
+                    "terminal_id": "term-0-w2-1",
+                    "ordinal": 1,
+                    "label": null,
+                    "cwd": "/fixture/shared/fedramp-rt",
+                    "revision": 1
+                  },
+                  {
+                    "id": "w2:p2",
+                    "terminal_id": "term-0-w2-2",
+                    "ordinal": 2,
+                    "label": null,
+                    "cwd": "/fixture/shared/fedramp-rt",
+                    "revision": 1
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "w3",
+            "label": "work",
+            "cwd": null,
+            "tabs": [
+              {
+                "id": "w3:t1",
+                "label": "1",
+                "naming": "unknown",
+                "panes": [
+                  {
+                    "id": "w3:p1",
+                    "terminal_id": "term-0-w3-1",
+                    "ordinal": 1,
+                    "label": null,
+                    "cwd": null,
+                    "revision": 1
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "w4",
+            "label": "herdr-navigator",
+            "cwd": "/fixture/shared/herdr-navigator",
+            "tabs": [
+              {
+                "id": "w4:t1",
+                "label": "1",
+                "naming": "named",
+                "panes": [
+                  {
+                    "id": "w4:p1",
+                    "terminal_id": "term-0-w4-1",
+                    "ordinal": 1,
+                    "label": "Review key handling",
+                    "cwd": "/fixture/shared/herdr-navigator",
+                    "revision": 1
+                  },
+                  {
+                    "id": "w4:p2",
+                    "terminal_id": "term-0-w4-2",
+                    "ordinal": 2,
+                    "label": null,
+                    "cwd": "/fixture/shared/herdr-navigator",
+                    "revision": 1
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "owner": ["void-dev", "session-remote", "epoch-remote-1"],
+        "label": "void.dev",
+        "relationship": "remote",
+        "home": null,
+        "connection": "connected",
+        "workspaces": [
+          {
+            "id": "w1",
+            "label": "seo-saas",
+            "cwd": "/fixture/shared/seo-saas",
+            "tabs": [
+              {
+                "id": "w1:t1",
+                "label": "1",
+                "naming": "unnamed",
+                "panes": [
+                  {
+                    "id": "w1:p1",
+                    "terminal_id": "term-1-w1-1",
+                    "ordinal": 1,
+                    "label": null,
+                    "cwd": "/fixture/shared/seo-saas",
+                    "revision": 1
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "w2",
+            "label": "herdr-navigator",
+            "cwd": "/fixture/shared/herdr-navigator",
+            "tabs": [
+              {
+                "id": "w2:t1",
+                "label": "1",
+                "naming": "unnamed",
+                "panes": [
+                  {
+                    "id": "w2:p1",
+                    "terminal_id": "term-1-w2-1",
+                    "ordinal": 1,
+                    "label": null,
+                    "cwd": "/fixture/shared/herdr-navigator",
+                    "revision": 1
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "current": ["void-dev", "session-remote", "epoch-remote-1", "pane", "w2:p1"],
+    "agent_updates": [
+      {
+        "update_id": "linked-manual",
+        "owner": ["local", "session-local", "epoch-local-1"],
+        "pane_id": "w4:p1",
+        "agent": "claude",
+        "aliases": ["reviewer"],
+        "session": "synthetic-session-a",
+        "status": "working",
+        "revision": 1
+      },
+      {
+        "update_id": "duplicate-newer",
+        "owner": ["local", "session-local", "epoch-local-1"],
+        "pane_id": "w4:p1",
+        "agent": "claude",
+        "aliases": ["reviewer"],
+        "session": "synthetic-session-a",
+        "status": "waiting",
+        "revision": 2
+      },
+      {
+        "update_id": "linked-remote",
+        "owner": ["void-dev", "session-remote", "epoch-remote-1"],
+        "pane_id": "w1:p1",
+        "agent": "gemini",
+        "aliases": [],
+        "session": null,
+        "status": "idle",
+        "revision": 1
+      },
+      {
+        "update_id": "missing-link",
+        "owner": ["void-dev", "session-remote", "epoch-remote-1"],
+        "pane_id": null,
+        "agent": "claude",
+        "aliases": [],
+        "session": null,
+        "status": "unknown",
+        "revision": 1
+      },
+      {
+        "update_id": "nonexistent-link",
+        "owner": ["void-dev", "session-remote", "epoch-remote-1"],
+        "pane_id": "w404:p1",
+        "agent": "gemini",
+        "aliases": [],
+        "session": null,
+        "status": "unknown",
+        "revision": 1
+      }
+    ]
+  },
+  "expected": {
+    "counts": {
+      "machines": 2,
+      "workspaces": 6,
+      "tabs": 7,
+      "panes": 9,
+      "agent_destinations": 0,
+      "linked_agent_panes": 2
+    },
+    "owner_counts": [
+      [
+        ["local", "session-local", "epoch-local-1"],
+        4,
+        5,
+        7
+      ],
+      [
+        ["void-dev", "session-remote", "epoch-remote-1"],
+        2,
+        2,
+        2
+      ]
+    ],
+    "destinations": [
+      {
+        "identity": ["local", "session-local", "epoch-local-1", "machine", "local"],
+        "ancestors": [],
+        "action": "NativeNewWorkspace"
+      },
+      {
+        "identity": ["void-dev", "session-remote", "epoch-remote-1", "machine", "void-dev"],
+        "ancestors": [],
+        "action": "NativeNewWorkspace"
+      },
+      {
+        "identity": ["local", "session-local", "epoch-local-1", "workspace", "w1"],
+        "ancestors": [],
+        "action": "FocusWorkspace"
+      },
+      {
+        "identity": ["local", "session-local", "epoch-local-1", "tab", "w1:t1"],
+        "ancestors": ["w1"],
+        "action": "FocusTab"
+      },
+      {
+        "identity": ["local", "session-local", "epoch-local-1", "pane", "w1:p1"],
+        "ancestors": ["w1", "w1:t1"],
+        "action": "FocusPane"
+      },
+      {
+        "identity": ["local", "session-local", "epoch-local-1", "tab", "w1:t2"],
+        "ancestors": ["w1"],
+        "action": "FocusTab"
+      },
+      {
+        "identity": ["local", "session-local", "epoch-local-1", "pane", "w1:p2"],
+        "ancestors": ["w1", "w1:t2"],
+        "action": "FocusPane"
+      },
+      {
+        "identity": ["local", "session-local", "epoch-local-1", "workspace", "w2"],
+        "ancestors": [],
+        "action": "FocusWorkspace"
+      },
+      {
+        "identity": ["local", "session-local", "epoch-local-1", "tab", "w2:t1"],
+        "ancestors": ["w2"],
+        "action": "FocusTab"
+      },
+      {
+        "identity": ["local", "session-local", "epoch-local-1", "pane", "w2:p1"],
+        "ancestors": ["w2", "w2:t1"],
+        "action": "FocusPane"
+      },
+      {
+        "identity": ["local", "session-local", "epoch-local-1", "pane", "w2:p2"],
+        "ancestors": ["w2", "w2:t1"],
+        "action": "FocusPane"
+      },
+      {
+        "identity": ["local", "session-local", "epoch-local-1", "workspace", "w3"],
+        "ancestors": [],
+        "action": "FocusWorkspace"
+      },
+      {
+        "identity": ["local", "session-local", "epoch-local-1", "tab", "w3:t1"],
+        "ancestors": ["w3"],
+        "action": "FocusTab"
+      },
+      {
+        "identity": ["local", "session-local", "epoch-local-1", "pane", "w3:p1"],
+        "ancestors": ["w3", "w3:t1"],
+        "action": "FocusPane"
+      },
+      {
+        "identity": ["local", "session-local", "epoch-local-1", "workspace", "w4"],
+        "ancestors": [],
+        "action": "FocusWorkspace"
+      },
+      {
+        "identity": ["local", "session-local", "epoch-local-1", "tab", "w4:t1"],
+        "ancestors": ["w4"],
+        "action": "FocusTab"
+      },
+      {
+        "identity": ["local", "session-local", "epoch-local-1", "pane", "w4:p1"],
+        "ancestors": ["w4", "w4:t1"],
+        "action": "FocusPane"
+      },
+      {
+        "identity": ["local", "session-local", "epoch-local-1", "pane", "w4:p2"],
+        "ancestors": ["w4", "w4:t1"],
+        "action": "FocusPane"
+      },
+      {
+        "identity": ["void-dev", "session-remote", "epoch-remote-1", "workspace", "w1"],
+        "ancestors": [],
+        "action": "FocusWorkspace"
+      },
+      {
+        "identity": ["void-dev", "session-remote", "epoch-remote-1", "tab", "w1:t1"],
+        "ancestors": ["w1"],
+        "action": "FocusTab"
+      },
+      {
+        "identity": ["void-dev", "session-remote", "epoch-remote-1", "pane", "w1:p1"],
+        "ancestors": ["w1", "w1:t1"],
+        "action": "FocusPane"
+      },
+      {
+        "identity": ["void-dev", "session-remote", "epoch-remote-1", "workspace", "w2"],
+        "ancestors": [],
+        "action": "FocusWorkspace"
+      },
+      {
+        "identity": ["void-dev", "session-remote", "epoch-remote-1", "tab", "w2:t1"],
+        "ancestors": ["w2"],
+        "action": "FocusTab"
+      },
+      {
+        "identity": ["void-dev", "session-remote", "epoch-remote-1", "pane", "w2:p1"],
+        "ancestors": ["w2", "w2:t1"],
+        "action": "FocusPane"
+      }
+    ],
+    "agent_links": [
+      ["linked-manual", "valid"],
+      ["duplicate-newer", "valid"],
+      ["linked-remote", "valid"],
+      ["missing-link", "missing"],
+      ["nonexistent-link", "nonexistent"]
+    ],
+    "pane_titles": [
+      [
+        ["local", "session-local", "epoch-local-1", "pane", "w4:p1"],
+        "Review key handling",
+        "claude"
+      ],
+      [
+        ["void-dev", "session-remote", "epoch-remote-1", "pane", "w1:p1"],
+        "gemini",
+        null
+      ]
+    ],
+    "machine_action": "Open native naming prompt using target-machine defaults; never switch-only or direct create"
+  }
+}

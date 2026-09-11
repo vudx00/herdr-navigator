@@ -33,6 +33,12 @@ pub(crate) struct Config {
 
 #[derive(Clone, Deserialize)]
 pub(crate) struct PickerConfig {
+    #[serde(default)]
+    pub(crate) presentation: Presentation,
+    #[serde(default = "default_focus_cycle_key")]
+    pub(crate) focus_cycle_key: String,
+    #[serde(default = "default_refresh_key")]
+    pub(crate) refresh_key: String,
     #[serde(default = "yes")]
     pub(crate) reuse_existing: bool,
     #[serde(default = "yes")]
@@ -67,6 +73,14 @@ pub(crate) struct PickerConfig {
     pub(crate) filter_keys: HashMap<String, String>,
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum Presentation {
+    #[default]
+    Legacy,
+    Merged,
+}
+
 #[derive(Clone, Deserialize)]
 pub(crate) struct JumpBackConfig {
     #[serde(default = "yes")]
@@ -89,6 +103,8 @@ pub(crate) struct NotificationsConfig {
 
 #[derive(Clone, Deserialize)]
 pub(crate) struct SourcesConfig {
+    #[serde(default)]
+    pub(crate) panes: bool,
     #[serde(default = "yes")]
     pub(crate) open_workspaces: bool,
     #[serde(default = "yes")]
@@ -227,6 +243,12 @@ fn default_source_priority_boost() -> i64 {
 fn default_agent_sort() -> String {
     "herdr".into()
 }
+fn default_focus_cycle_key() -> String {
+    "f6".into()
+}
+fn default_refresh_key() -> String {
+    "f8".into()
+}
 fn default_directory_template_key() -> String {
     "alt-enter".into()
 }
@@ -269,6 +291,9 @@ pub(crate) fn parse_ctrl_key(value: &str) -> Option<char> {
 impl Default for PickerConfig {
     fn default() -> Self {
         Self {
+            presentation: Presentation::Legacy,
+            focus_cycle_key: default_focus_cycle_key(),
+            refresh_key: default_refresh_key(),
             reuse_existing: true,
             create_missing: true,
             engine: default_engine(),
@@ -316,11 +341,80 @@ impl PickerConfig {
             })
     }
 
-    fn custom_filter_keys(&self) -> Vec<(Source, char)> {
-        self.filter_keys
+    fn sorted_filter_keys(&self) -> Vec<(&str, &str)> {
+        let mut keys: Vec<_> = self
+            .filter_keys
             .iter()
-            .filter_map(|(source, key)| Some((Source::from_config(source)?, parse_ctrl_key(key)?)))
-            .collect()
+            .map(|(name, key)| (name.as_str(), key.as_str()))
+            .collect();
+        keys.sort_unstable_by_key(|(name, _)| *name);
+        keys
+    }
+
+    fn custom_filter_keys(&self) -> Vec<(Source, char)> {
+        let mut custom = Vec::new();
+        for (name, value) in self.sorted_filter_keys() {
+            let (Some(source), Some(key)) = (Source::from_config(name), parse_ctrl_key(value))
+            else {
+                continue;
+            };
+            // First valid sorted alias owns the source. Duplicate keys keep
+            // their source claimed, but only the first sorted source dispatches.
+            if !custom.iter().any(|(existing, _)| *existing == source) {
+                custom.push((source, key));
+            }
+        }
+        custom
+    }
+
+    pub(crate) fn filter_setting_path(&self, source: Source) -> String {
+        self.sorted_filter_keys()
+            .into_iter()
+            .find(|(name, value)| {
+                Source::from_config(name) == Some(source) && parse_ctrl_key(value).is_some()
+            })
+            .map(|(name, _)| format!("picker.filter_keys.{name}"))
+            .unwrap_or_else(|| format!("picker.filter_keys.{} [default]", source.label()))
+    }
+
+    fn filter_diagnostics(&self) -> Vec<String> {
+        let mut diagnostics = Vec::new();
+        let mut accepted = Vec::new();
+        for (name, value) in self.sorted_filter_keys() {
+            let path = format!("picker.filter_keys.{name}");
+            let Some(source) = Source::from_config(name) else {
+                let key = parse_ctrl_key(value)
+                    .map(|ch| format!("ctrl-{ch}"))
+                    .unwrap_or_else(|| format!("{value:?}"));
+                diagnostics.push(format!(
+                    "{path}: {key} has unknown source; binding inactive"
+                ));
+                continue;
+            };
+            let Some(key) = parse_ctrl_key(value) else {
+                diagnostics.push(format!(
+                    "{path}: invalid Ctrl key {value:?}; entry ignored, binding inactive"
+                ));
+                continue;
+            };
+            if let Some((winner, _, winner_key)) = accepted.iter().find(|(_, s, _)| *s == source) {
+                diagnostics.push(format!("{path}: ctrl-{key} duplicates source alias picker.filter_keys.{winner} at ctrl-{winner_key}; first valid sorted alias wins, binding inactive"));
+                continue;
+            }
+            if let Some((winner, _, _)) = accepted.iter().find(|(_, _, k)| *k == key) {
+                diagnostics.push(format!("{path}: ctrl-{key} conflicts with picker.filter_keys.{winner}; first sorted custom key wins, binding inactive, source default suppressed"));
+            }
+            accepted.push((name, source, key));
+        }
+        for (source, key) in default_filter_keys() {
+            if accepted.iter().any(|(_, s, _)| *s == source) {
+                continue;
+            }
+            if let Some((winner, _, _)) = accepted.iter().find(|(_, _, k)| *k == key) {
+                diagnostics.push(format!("picker.filter_keys.{} [default]: ctrl-{key} conflicts with picker.filter_keys.{winner}; custom wins, default inactive", source.label()));
+            }
+        }
+        diagnostics
     }
 
     /// Resolved once per filter pass, not per candidate: `source_order` holds
@@ -339,6 +433,11 @@ impl PickerConfig {
         ranks
     }
 
+    /// Merged search compares this separately after relevance. No i64 multiplication.
+    pub(crate) fn merged_preference(&self, rank: usize) -> i128 {
+        Source::COUNT.saturating_sub(rank) as i128 * i128::from(self.source_priority_boost)
+    }
+
     pub(crate) fn bonus_for_rank(&self, rank: usize) -> i64 {
         (Source::COUNT as i64 - rank as i64).max(0) * self.source_priority_boost
     }
@@ -354,6 +453,7 @@ impl Default for JumpBackConfig {
 impl Default for SourcesConfig {
     fn default() -> Self {
         Self {
+            panes: false,
             open_workspaces: true,
             herdr_plus_projects: true,
             zoxide: true,
@@ -438,53 +538,73 @@ impl Config {
             Ok(source) => Self::parse_or_report(&source),
             Err(_) => Self::default(),
         };
+        let mut diagnostics = config.diagnostics();
         if let Some(prefix) = herdr_ctrl_prefix() {
-            config.avoid_default_prefix_conflict(prefix);
+            diagnostics.extend(config.avoid_default_prefix_conflict(prefix));
+        }
+        for diagnostic in diagnostics {
+            eprintln!("Navigator config: {diagnostic}");
         }
         config
     }
 
-    /// A silent fallback to defaults reads as "my settings do nothing", so say
-    /// why. Reported against default notification settings — the ones that
-    /// would have configured this are the ones that failed to parse.
+    // Keep invalid TOML's existing notification policy separate from pure parsing.
     fn parse_or_report(source: &str) -> Self {
+        let (config, error) = Self::parse_or_default(source);
+        if let Some(message) = error {
+            eprintln!("{message}");
+            crate::herdr::notify_error(&message, &config.notifications);
+        }
+        config
+    }
+
+    fn parse_or_default(source: &str) -> (Self, Option<String>) {
         match toml::from_str(source) {
-            Ok(config) => config,
-            Err(error) => {
-                let fallback = Self::default();
-                let message = format!("Invalid config.toml, using defaults: {error}");
-                eprintln!("{message}");
-                crate::herdr::notify_error(&message, &fallback.notifications);
-                fallback
-            }
+            Ok(config) => (config, None),
+            Err(error) => (
+                Self::default(),
+                Some(format!("Invalid config.toml, using defaults: {error}")),
+            ),
         }
     }
 
-    fn avoid_default_prefix_conflict(&mut self, prefix: char) {
-        let Some(source) = default_filter_keys()
-            .into_iter()
-            .find_map(|(source, key)| (key == prefix).then_some(source))
-        else {
-            return;
+    fn diagnostics(&self) -> Vec<String> {
+        let mut diagnostics = Vec::new();
+        if self.picker.presentation == Presentation::Merged {
+            diagnostics.push("picker.presentation: merged is unavailable; request retained, legacy renderer remains active".into());
+        }
+        diagnostics.extend(self.picker.filter_diagnostics());
+        diagnostics.extend(crate::keymap::config_diagnostics(&self.picker));
+        diagnostics
+    }
+
+    fn avoid_default_prefix_conflict(&mut self, prefix: char) -> Vec<String> {
+        let mut diagnostics = crate::keymap::host_prefix_diagnostics(&self.picker, prefix);
+        let Some(source) = self.picker.filter_source_for_key(prefix) else {
+            return diagnostics;
         };
         if self
             .picker
-            .filter_keys
-            .keys()
-            .filter_map(|name| Source::from_config(name))
-            .any(|custom_source| custom_source == source)
+            .custom_filter_keys()
+            .iter()
+            .any(|(s, _)| *s == source)
         {
-            return;
+            diagnostics.push(format!("{}: ctrl-{prefix} conflicts with Herdr keys.prefix; explicit custom binding retained, host interception unresolved", self.picker.filter_setting_path(source)));
+            return diagnostics;
         }
-        let source_name = source.label().to_string();
-        if let Some(key) = ['g', 'e', 'd', 'f', 'y']
-            .into_iter()
-            .find(|key| self.picker.filter_source_for_key(*key).is_none())
-        {
+        if let Some(key) = ['g', 'e', 'd', 'f', 'y'].into_iter().find(|key| {
+            *key != prefix
+                && self.picker.filter_source_for_key(*key).is_none()
+                && !crate::keymap::claimed_template_or_reserved_ctrl(&self.picker, *key)
+        }) {
+            diagnostics.push(format!("{}: ctrl-{prefix} conflicts with Herdr keys.prefix; default remapped to ctrl-{key}", self.picker.filter_setting_path(source)));
             self.picker
                 .filter_keys
-                .insert(source_name, format!("ctrl-{key}"));
+                .insert(source.label().into(), format!("ctrl-{key}"));
+        } else {
+            diagnostics.push(format!("{}: ctrl-{prefix} conflicts with Herdr keys.prefix; fallback keys ctrl-g/e/d/f/y exhausted, binding unchanged and host interception unresolved", self.picker.filter_setting_path(source)));
         }
+        diagnostics
     }
 }
 
@@ -501,6 +621,305 @@ fn herdr_ctrl_prefix() -> Option<char> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rollout_defaults_and_checked_in_examples_remain_legacy() {
+        for config in [
+            Config::default(),
+            toml::from_str("").unwrap(),
+            toml::from_str("[picker]\n[sources]").unwrap(),
+            toml::from_str(DEFAULT_CONFIG).unwrap(),
+            toml::from_str(include_str!("../examples/config.toml")).unwrap(),
+        ] {
+            assert_eq!(config.picker.presentation, Presentation::Legacy);
+            assert!(!config.sources.panes);
+            assert_eq!(config.picker.focus_cycle_key, "f6");
+            assert_eq!(config.picker.refresh_key, "f8");
+            assert!(config.diagnostics().is_empty());
+            assert_eq!(config.picker.filter_key(Source::Project), Some('p'));
+            assert_eq!(config.picker.filter_key(Source::Root), Some('r'));
+            assert_eq!(config.picker.filter_key(Source::Server), Some('s'));
+        }
+        assert_eq!(Source::COUNT, 9);
+        assert_eq!(
+            Source::all(),
+            [
+                Source::Workspace,
+                Source::Project,
+                Source::Server,
+                Source::Session,
+                Source::Zoxide,
+                Source::Root,
+                Source::Agent,
+                Source::QuickAction,
+                Source::Integration
+            ]
+        );
+        assert_eq!(Source::Workspace.index(), 0);
+        assert_eq!(Source::Integration.index(), 8);
+    }
+
+    #[test]
+    fn legacy_partial_fixture_retains_settings_and_aliases() {
+        let config: Config =
+            toml::from_str(include_str!("../tests/fixtures/config/legacy-partial.toml")).unwrap();
+        let picker = &config.picker;
+        assert_eq!(picker.presentation, Presentation::Legacy);
+        assert!(!config.sources.panes);
+        assert!(!config.sources.open_workspaces);
+        assert!(config.sources.agents && config.sources.servers);
+        assert!(!config.sources.sessions);
+        assert!(!picker.reuse_existing && !picker.create_missing);
+        assert_eq!(picker.source_ranks()[Source::Server.index()], 2);
+        assert_eq!(picker.source_priority_boost, 7);
+        assert_eq!(picker.agent_sort, "priority");
+        assert_eq!(picker.root_cache_seconds, 90);
+        assert!(!picker.preview && !picker.detailed_rows && !picker.check_updates);
+        assert!(picker.vim_mode && picker.vim_filter_search);
+        assert_eq!(picker.directory_template.as_deref(), Some("default.toml"));
+        assert_eq!(picker.directory_template_key, "option+enter");
+        assert_eq!(picker.filter_source_for_key('g'), Some(Source::Server));
+        assert!(!config.jump_back.pin_previous);
+        assert!(!config.notifications.enabled && !config.notifications.audio);
+        assert!(!config.sessions.local);
+        assert_eq!(
+            config.sessions.entries[0].remote.as_deref(),
+            Some("fixture-remote")
+        );
+        assert!(config.diagnostics().is_empty());
+    }
+
+    #[test]
+    fn unsupported_rollout_requests_are_retained_and_diagnosed_purely() {
+        let (config, error) =
+            Config::parse_or_default(include_str!("../tests/fixtures/config/merged-request.toml"));
+        assert!(error.is_none());
+        assert_eq!(config.picker.presentation, Presentation::Merged);
+        assert!(config.sources.panes);
+        assert_eq!(config.diagnostics(), [
+            "picker.presentation: merged is unavailable; request retained, legacy renderer remains active",
+        ]);
+        // These remain readable, not translations into future merged behavior.
+        // The fixture README assigns pin order, Query focus, and owner density
+        // to later tasks rather than claiming they work in N02.
+        assert!(config.jump_back.pin_previous);
+        assert!(config.picker.vim_mode);
+        assert!(!config.picker.detailed_rows);
+        assert_eq!(config.picker.source_priority_boost, 999);
+        assert_eq!(config.picker.filter_key(Source::Server), Some('s'));
+    }
+
+    #[test]
+    fn pane_and_presentation_requests_are_independent() {
+        for presentation in ["legacy", "merged"] {
+            for panes in [false, true] {
+                let config: Config = toml::from_str(&format!(
+                    "[picker]\npresentation = '{presentation}'\n[sources]\npanes = {panes}"
+                ))
+                .unwrap();
+                assert_eq!(config.sources.panes, panes);
+                assert_eq!(
+                    config.picker.presentation == Presentation::Merged,
+                    presentation == "merged"
+                );
+                assert_eq!(
+                    config.diagnostics().len(),
+                    usize::from(presentation == "merged")
+                );
+                assert_eq!(
+                    config.picker.source_ranks(),
+                    PickerConfig::default().source_ranks()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn unknown_presentation_uses_existing_invalid_config_fallback() {
+        let (config, error) =
+            Config::parse_or_default("[picker]\npresentation = 'future'\npreview = false");
+        let error = error.unwrap();
+        assert!(error.starts_with("Invalid config.toml, using defaults:"));
+        assert!(error.contains("unknown variant `future`"));
+        assert!(error.contains("`legacy` or `merged`"));
+        assert_eq!(config.picker.presentation, Presentation::Legacy);
+        assert!(config.picker.preview);
+        assert!(config.notifications.enabled);
+        assert!(!config.sources.panes);
+    }
+
+    #[test]
+    fn collision_fixture_is_independent_of_hashmap_insertion_order() {
+        let original: Config = toml::from_str(include_str!(
+            "../tests/fixtures/config/binding-collisions.toml"
+        ))
+        .unwrap();
+        let diagnostics = original.diagnostics();
+        let keys = original.picker.sorted_filter_keys();
+        for reverse in [false, true] {
+            for offset in 0..keys.len() {
+                let mut config = original.clone();
+                config.picker.filter_keys.clear();
+                let mut reordered = keys.clone();
+                reordered.rotate_left(offset);
+                if reverse {
+                    reordered.reverse();
+                }
+                config.picker.filter_keys.extend(
+                    reordered
+                        .into_iter()
+                        .map(|(name, value)| (name.into(), value.into())),
+                );
+                assert_eq!(config.diagnostics(), diagnostics);
+                assert_eq!(
+                    config.picker.custom_filter_keys(),
+                    original.picker.custom_filter_keys()
+                );
+                for source in Source::all() {
+                    assert_eq!(
+                        config.picker.filter_key(source),
+                        original.picker.filter_key(source)
+                    );
+                }
+                for ch in 'a'..='z' {
+                    assert_eq!(
+                        config.picker.filter_source_for_key(ch),
+                        original.picker.filter_source_for_key(ch)
+                    );
+                }
+            }
+        }
+        assert_eq!(original.picker.filter_key(Source::Agent), Some('c'));
+        assert_eq!(original.picker.filter_key(Source::Project), Some('p'));
+        assert_eq!(original.picker.filter_key(Source::Zoxide), None);
+        assert_eq!(original.picker.filter_source_for_key('z'), None);
+        for fragment in [
+            "picker.filter_keys.agents: ctrl-e duplicates source alias picker.filter_keys.agent at ctrl-c",
+            "picker.filter_keys.projects: ctrl-g duplicates source alias picker.filter_keys.project at ctrl-p",
+            "picker.filter_keys.zoxide: ctrl-p conflicts with picker.filter_keys.project",
+            "picker.filter_keys.unknown: ctrl-v has unknown source",
+            "picker.filter_keys.quick: invalid Ctrl key",
+            "ctrl-c conflicts with legacy Back",
+            "j [vim Normal] conflicts with legacy MoveDown",
+            "legacy Clear: ctrl-u conflicts with picker.filter_keys.plugin",
+            "legacy CloseWorkspace: ctrl-x conflicts with picker.filter_keys.session",
+            "legacy ToggleMark: ctrl-b conflicts with picker.filter_keys.open",
+            "legacy TogglePreview: ctrl-o conflicts with picker.filter_keys.server",
+            "picker.directory_template_key [when template available]: ctrl-p conflicts with picker.filter_keys.project",
+            "picker.focus_cycle_key: ctrl-p conflicts with picker.filter_keys.project",
+            "picker.refresh_key: ctrl-p conflicts with picker.focus_cycle_key",
+        ] {
+            assert!(diagnostics.iter().any(|line| line.contains(fragment)), "missing {fragment}: {diagnostics:#?}");
+        }
+    }
+
+    #[test]
+    fn first_valid_sorted_alias_and_custom_over_default_are_explicit() {
+        let config: Config = toml::from_str(
+            r#"
+            [picker.filter_keys]
+            agent = "invalid"
+            agents = "CTRL+P"
+            remote = "^g"
+            server = "ctrl-e"
+        "#,
+        )
+        .unwrap();
+        assert_eq!(
+            config.picker.filter_source_for_key('p'),
+            Some(Source::Agent)
+        );
+        assert_eq!(config.picker.filter_key(Source::Project), None);
+        assert_eq!(config.picker.filter_key(Source::Server), Some('g'));
+        assert_eq!(config.picker.filter_source_for_key('e'), None);
+        assert!(config.diagnostics().iter().any(|line| line == "picker.filter_keys.project [default]: ctrl-p conflicts with picker.filter_keys.agents; custom wins, default inactive"));
+
+        let mut picker = PickerConfig::default();
+        picker.filter_keys.insert("agent".into(), "ctrl-e".into());
+        picker.filter_keys.insert("Agents".into(), "ctrl-g".into());
+        assert_eq!(picker.filter_key(Source::Agent), Some('g'));
+        picker.filter_keys.insert("project".into(), "ctrl-g".into());
+        // Sorted original config names win, not Source::all registry order.
+        assert_eq!(picker.filter_source_for_key('g'), Some(Source::Agent));
+        assert_eq!(picker.filter_key(Source::Project), None);
+    }
+
+    #[test]
+    fn host_prefix_fallback_skips_template_reserved_and_custom_claims() {
+        let mut config = Config::default();
+        config.picker.directory_template = Some("fixture.toml".into());
+        config.picker.directory_template_key = "^g".into();
+        config.picker.focus_cycle_key = "ctrl-e".into();
+        config.picker.refresh_key = "CTRL+D".into();
+        config
+            .picker
+            .filter_keys
+            .insert("project".into(), "ctrl-f".into());
+        assert_eq!(config.avoid_default_prefix_conflict('a'), ["picker.filter_keys.agent [default]: ctrl-a conflicts with Herdr keys.prefix; default remapped to ctrl-y"]);
+        assert_eq!(
+            config.picker.filter_source_for_key('y'),
+            Some(Source::Agent)
+        );
+        assert_eq!(config.picker.filter_source_for_key('a'), None);
+    }
+
+    #[test]
+    fn host_prefix_exhaustion_and_explicit_custom_are_not_silently_remapped() {
+        let mut config = Config::default();
+        config.picker.directory_template = Some("fixture.toml".into());
+        config.picker.directory_template_key = "ctrl-g".into();
+        config.picker.focus_cycle_key = "ctrl-e".into();
+        config.picker.refresh_key = "ctrl-d".into();
+        config
+            .picker
+            .filter_keys
+            .insert("project".into(), "ctrl-f".into());
+        config
+            .picker
+            .filter_keys
+            .insert("root".into(), "ctrl-y".into());
+        let diagnostic = config.avoid_default_prefix_conflict('a');
+        assert_eq!(config.picker.filter_key(Source::Agent), Some('a'));
+        assert!(diagnostic[0].contains("fallback keys ctrl-g/e/d/f/y exhausted"));
+
+        config
+            .picker
+            .filter_keys
+            .insert("agent".into(), "ctrl-a".into());
+        assert!(config.avoid_default_prefix_conflict('a')[0]
+            .contains("explicit custom binding retained, host interception unresolved"));
+        assert_eq!(config.picker.filter_key(Source::Agent), Some('a'));
+        // A custom binding can conflict with a host key that has no default filter.
+        config
+            .picker
+            .filter_keys
+            .insert("agent".into(), "ctrl-v".into());
+        assert!(config.avoid_default_prefix_conflict('v')[0]
+            .contains("picker.filter_keys.agent: ctrl-v conflicts"));
+        assert_eq!(config.picker.filter_key(Source::Agent), Some('v'));
+    }
+
+    #[test]
+    fn merged_source_preference_handles_extreme_boosts_without_changing_legacy_bonus() {
+        for boost in [i64::MIN, 0, i64::MAX] {
+            let picker = PickerConfig {
+                source_priority_boost: boost,
+                ..PickerConfig::default()
+            };
+            assert_eq!(
+                picker.merged_preference(0),
+                Source::COUNT as i128 * i128::from(boost)
+            );
+            assert_eq!(picker.merged_preference(usize::MAX), 0);
+        }
+        let picker = PickerConfig::default();
+        for rank in 0..=Source::COUNT {
+            assert_eq!(
+                picker.merged_preference(rank),
+                i128::from(picker.bonus_for_rank(rank))
+            );
+        }
+    }
 
     #[test]
     fn default_source_order_prioritizes_open_workspaces_then_agents() {

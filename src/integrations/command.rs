@@ -1,5 +1,4 @@
 use std::{
-    cell::OnceCell,
     io::Read,
     process::{Command, ExitStatus, Stdio},
     thread,
@@ -10,8 +9,8 @@ use serde::Deserialize;
 
 use crate::{
     config::IntegrationConfig,
-    model::{Entry, EntryAction, Source},
-    paths::{expand_path, home},
+    model::{Entry, EntryAction, EntryIdentity, ProviderId, Source},
+    paths::{expand_path, OwnedPath},
 };
 
 #[derive(Debug, Deserialize)]
@@ -46,7 +45,7 @@ pub(crate) fn collect(integrations: &[IntegrationConfig]) -> Vec<Entry> {
 }
 
 fn collect_one(integration: &IntegrationConfig) -> Vec<Entry> {
-    if integration.id.trim().is_empty() {
+    if integration.id.trim().is_empty() || integration.open.trim().is_empty() {
         return vec![];
     }
     let Ok(stdout) = run_shell_capture(
@@ -59,6 +58,7 @@ fn collect_one(integration: &IntegrationConfig) -> Vec<Entry> {
     parse_items(&stdout)
         .unwrap_or_default()
         .into_iter()
+        .filter(|item| !item.id.trim().is_empty())
         .map(|item| entry_from_item(integration, item))
         .collect()
 }
@@ -68,7 +68,11 @@ fn parse_items(bytes: &[u8]) -> Result<Vec<IntegrationItem>, serde_json::Error> 
 }
 
 fn entry_from_item(integration: &IntegrationConfig, item: IntegrationItem) -> Entry {
-    let path = item.path.as_deref().map(expand_path).unwrap_or_else(home);
+    let path = item
+        .path
+        .as_deref()
+        .filter(|path| !path.is_empty())
+        .map(|path| OwnedPath::process(expand_path(path)));
     let subtitle = subtitle(integration, &item);
     let command = render_template(&integration.open, &item);
     let id = item.id.clone();
@@ -78,26 +82,29 @@ fn entry_from_item(integration: &IntegrationConfig, item: IntegrationItem) -> En
         "session" => Source::Session,
         _ => Source::Integration,
     };
-    Entry {
-        source,
-        title: item.title,
-        subtitle,
-        path,
-        workspace_id: None,
-        workspace_label: None,
-        agent_target: None,
-        project: None,
-        action: EntryAction::RunCommand {
-            command,
-            timeout_ms: integration.open_timeout_ms,
-            notify_success: integration.notify_success,
-            notify_error: integration.notify_error,
+    Entry::new(
+        EntryIdentity::command(&integration.id, &id, &integration.open).unwrap(),
+        crate::model::EntryData {
+            source,
+            title: item.title,
+            subtitle,
+            path,
+            workspace_id: None,
+            workspace_label: None,
+            agent: None,
+            project: None,
+            action: EntryAction::RunCommand {
+                command,
+                timeout_ms: integration.open_timeout_ms,
+                notify_success: integration.notify_success,
+                notify_error: integration.notify_error,
+            },
+            source_label: (!matches!(kind.as_str(), "server" | "remote-terminal" | "session"))
+                .then(|| integration.label.clone()),
+            search_terms: vec![id, kind],
+            provenance: [ProviderId::command(&integration.id).unwrap()].into(),
         },
-        source_label: (!matches!(kind.as_str(), "server" | "remote-terminal" | "session"))
-            .then(|| integration.label.clone()),
-        search_terms: vec![id, kind],
-        canonical_key: OnceCell::new(),
-    }
+    )
 }
 
 fn subtitle(integration: &IntegrationConfig, item: &IntegrationItem) -> String {
@@ -195,8 +202,14 @@ fn run_shell_capture(command: &str, timeout_ms: u64, max_bytes: usize) -> Result
     Ok(bytes)
 }
 
-pub(crate) fn run_command(command: &str, timeout_ms: u64) -> Result<(), String> {
-    let mut child = shell(command).spawn().map_err(|error| error.to_string())?;
+pub(crate) fn run_command(
+    route: &crate::herdr::Invocation,
+    command: &str,
+    timeout_ms: u64,
+) -> Result<(), String> {
+    let mut process = shell(command);
+    route.configure_process(&mut process);
+    let mut child = process.spawn().map_err(|error| error.to_string())?;
     let status = wait_with_timeout(&mut child, timeout_ms)?;
     if status.success() {
         Ok(())
@@ -266,6 +279,8 @@ mod tests {
 
         assert_eq!(entry.source, Source::Session);
         assert_eq!(entry.source_name(), "session");
+        assert!(entry.has_provenance(Source::Session));
+        assert!(entry.has_provenance(Source::Integration));
     }
 
     #[test]
@@ -282,6 +297,17 @@ mod tests {
 
         assert_eq!(entry.source, Source::Server);
         assert_eq!(entry.source_name(), "server");
+        assert!(entry.has_provenance(Source::Server));
+        assert!(entry.has_provenance(Source::Integration));
+        assert_eq!(
+            entry.destination_kind(),
+            crate::model::DestinationKind::Action
+        );
+        assert!(matches!(
+            entry.action,
+            EntryAction::RunCommand { ref command, .. }
+                if command == "demo open 's87' --path '/tmp/server/s87'"
+        ));
     }
 
     #[test]
@@ -298,6 +324,17 @@ mod tests {
 
         assert_eq!(entry.source, Source::Server);
         assert_eq!(entry.source_name(), "server");
+        assert!(entry.has_provenance(Source::Server));
+        assert!(entry.has_provenance(Source::Integration));
+        assert_eq!(
+            entry.destination_kind(),
+            crate::model::DestinationKind::Action
+        );
+        assert!(matches!(
+            entry.action,
+            EntryAction::RunCommand { ref command, .. }
+                if command == "demo open 's211::term_abc' --path 'remote:s211:term_abc'"
+        ));
     }
 
     #[test]
@@ -333,6 +370,50 @@ mod tests {
         assert_eq!(entry.source, Source::Integration);
         assert_eq!(entry.title, "Item");
         assert!(matches!(entry.action, EntryAction::RunCommand { .. }));
-        assert_eq!(entry.path, std::path::PathBuf::from("/tmp"));
+        assert_eq!(entry.path_text(), "/tmp");
+    }
+    #[test]
+    fn command_identity_uses_provider_item_and_configured_action_not_display_kind() {
+        let make = |id: &str, path: Option<&str>| IntegrationItem {
+            id: id.into(),
+            title: "label".into(),
+            subtitle: String::new(),
+            path: path.map(str::to_string),
+            kind: "server".into(),
+        };
+        let first = entry_from_item(&config(), make("one", None));
+        let moved = entry_from_item(&config(), make("one", Some("/different")));
+        assert_eq!(first.key(), moved.key());
+        assert_eq!(
+            first.destination_kind(),
+            crate::model::DestinationKind::Action
+        );
+        assert!(first.path.is_none());
+        let second = entry_from_item(&config(), make("two", None));
+        assert_ne!(first.key(), second.key());
+        let mut other = config();
+        other.id = "another-provider".into();
+        assert_ne!(
+            first.key(),
+            entry_from_item(&other, make("one", None)).key()
+        );
+        other = config();
+        other.open = "a different configured action".into();
+        assert_ne!(
+            first.key(),
+            entry_from_item(&other, make("one", None)).key()
+        );
+    }
+    #[test]
+    fn run_preserves_zero_timeout_shell_quoting_and_configured_deadline() {
+        let route = crate::herdr::Invocation::capture();
+        run_command(
+            &route,
+            "test 'a b' = 'a b' && test 'It'\\''s' = \"It's\"",
+            0,
+        )
+        .unwrap();
+        let error = run_command(&route, "sleep 1", 20).unwrap_err();
+        assert!(error.contains("timed out after 20ms"));
     }
 }

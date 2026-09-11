@@ -1,0 +1,634 @@
+{
+  "fixture_schema": "navigation-n01-v1",
+  "evidence": "synthetic-hypothetical",
+  "case_id": "capability-failure-cases",
+  "input": {
+    "defaults": {
+      "owner": ["void-dev", "session-remote", "epoch-remote-1"],
+      "capabilities": "snapshot-focus-native-flow",
+      "route": "valid",
+      "connection": "connected",
+      "phase": "collection",
+      "cached": true,
+      "target": ["void-dev", "session-remote", "epoch-remote-1", "pane", "w2:p1"]
+    },
+    "cases": [
+      {
+        "case_id": "ordinary-remote-server",
+        "input": {
+          "capabilities": "ordinary-server",
+          "route": "missing"
+        },
+        "expected": {
+          "availability": "available",
+          "scope": "server:void.dev",
+          "action": "FocusPane",
+          "reason": "server-only",
+          "machine_action": "disabled"
+        }
+      },
+      {
+        "case_id": "snapshot-only",
+        "input": {
+          "capabilities": "snapshot-only"
+        },
+        "expected": {
+          "availability": "available",
+          "scope": "server:void.dev",
+          "action": "FocusPane",
+          "reason": "client-focus-unsupported",
+          "machine_action": "disabled"
+        }
+      },
+      {
+        "case_id": "focus-without-native-flow",
+        "input": {
+          "capabilities": "snapshot-and-focus",
+          "target": ["void-dev", "session-remote", "epoch-remote-1", "machine", "void-dev"]
+        },
+        "expected": {
+          "availability": "disabled",
+          "scope": "combined",
+          "action": "NativeNewWorkspace",
+          "reason": "native-flow-unsupported",
+          "pane_action": "available"
+        }
+      },
+      {
+        "case_id": "full-capabilities",
+        "input": {
+          "target": ["void-dev", "session-remote", "epoch-remote-1", "machine", "void-dev"]
+        },
+        "expected": {
+          "availability": "available",
+          "scope": "combined",
+          "action": "NativeNewWorkspace",
+          "reason": "ready"
+        }
+      },
+      {
+        "case_id": "unsupported-focus-workspace",
+        "input": {
+          "unsupported_focus_kind": "workspace",
+          "target": ["void-dev", "session-remote", "epoch-remote-1", "workspace", "w2"]
+        },
+        "expected": {
+          "availability": "disabled",
+          "scope": "combined",
+          "action": "FocusWorkspace",
+          "reason": "target-kind-unsupported"
+        }
+      },
+      {
+        "case_id": "unsupported-focus-tab",
+        "input": {
+          "unsupported_focus_kind": "tab",
+          "target": ["void-dev", "session-remote", "epoch-remote-1", "tab", "w2:t1"]
+        },
+        "expected": {
+          "availability": "disabled",
+          "scope": "combined",
+          "action": "FocusTab",
+          "reason": "target-kind-unsupported"
+        }
+      },
+      {
+        "case_id": "unsupported-focus-pane",
+        "input": {
+          "unsupported_focus_kind": "pane"
+        },
+        "expected": {
+          "availability": "disabled",
+          "scope": "combined",
+          "action": "FocusPane",
+          "reason": "target-kind-unsupported"
+        }
+      },
+      {
+        "case_id": "route-missing",
+        "input": {
+          "route": "missing",
+          "phase": "activation"
+        },
+        "expected": {
+          "availability": "disabled",
+          "scope": "combined",
+          "action": "FocusPane",
+          "reason": "route-missing"
+        }
+      },
+      {
+        "case_id": "route-expired",
+        "input": {
+          "route": "expired",
+          "phase": "activation"
+        },
+        "expected": {
+          "availability": "disabled",
+          "scope": "combined",
+          "action": "FocusPane",
+          "reason": "route-expired"
+        }
+      },
+      {
+        "case_id": "route-unauthorized",
+        "input": {
+          "route": "unauthorized",
+          "phase": "activation"
+        },
+        "expected": {
+          "availability": "disabled",
+          "scope": "combined",
+          "action": "FocusPane",
+          "reason": "route-unauthorized"
+        }
+      },
+      {
+        "case_id": "route-wrong-client",
+        "input": {
+          "route": "wrong-client",
+          "phase": "activation"
+        },
+        "expected": {
+          "availability": "disabled",
+          "scope": "combined",
+          "action": "FocusPane",
+          "reason": "route-wrong-client"
+        }
+      },
+      {
+        "case_id": "unsupported-protocol",
+        "input": {
+          "protocol": "unsupported"
+        },
+        "expected": {
+          "availability": "disabled",
+          "scope": "combined",
+          "action": "FocusPane",
+          "reason": "protocol-unsupported"
+        }
+      },
+      {
+        "case_id": "unsupported-operation",
+        "input": {
+          "operation": "unsupported"
+        },
+        "expected": {
+          "availability": "disabled",
+          "scope": "combined",
+          "action": "FocusPane",
+          "reason": "operation-unsupported"
+        }
+      },
+      {
+        "case_id": "connecting-cached",
+        "input": {
+          "connection": "connecting",
+          "cached": true
+        },
+        "expected": {
+          "availability": "disabled",
+          "scope": "combined",
+          "action": "FocusPane",
+          "reason": "connecting",
+          "inventory": "stale",
+          "pane_count": 2,
+          "unaffected_owner": ["local", "session-local", "epoch-local-1"],
+          "unaffected_action": "FocusPane"
+        }
+      },
+      {
+        "case_id": "connecting-uncached",
+        "input": {
+          "connection": "connecting",
+          "cached": false
+        },
+        "expected": {
+          "availability": "disabled",
+          "scope": "combined",
+          "action": "FocusPane",
+          "reason": "connecting",
+          "inventory": "unknown",
+          "pane_count": null,
+          "unaffected_owner": ["local", "session-local", "epoch-local-1"],
+          "unaffected_action": "FocusPane"
+        }
+      },
+      {
+        "case_id": "disabled-cached",
+        "input": {
+          "connection": "disabled",
+          "cached": true
+        },
+        "expected": {
+          "availability": "disabled",
+          "scope": "combined",
+          "action": "FocusPane",
+          "reason": "disabled",
+          "inventory": "stale",
+          "pane_count": 2,
+          "unaffected_owner": ["local", "session-local", "epoch-local-1"],
+          "unaffected_action": "FocusPane"
+        }
+      },
+      {
+        "case_id": "disabled-uncached",
+        "input": {
+          "connection": "disabled",
+          "cached": false
+        },
+        "expected": {
+          "availability": "disabled",
+          "scope": "combined",
+          "action": "FocusPane",
+          "reason": "disabled",
+          "inventory": "unknown",
+          "pane_count": null,
+          "unaffected_owner": ["local", "session-local", "epoch-local-1"],
+          "unaffected_action": "FocusPane"
+        }
+      },
+      {
+        "case_id": "error-cached",
+        "input": {
+          "connection": "error",
+          "cached": true
+        },
+        "expected": {
+          "availability": "disabled",
+          "scope": "combined",
+          "action": "FocusPane",
+          "reason": "error",
+          "inventory": "stale",
+          "pane_count": 2,
+          "unaffected_owner": ["local", "session-local", "epoch-local-1"],
+          "unaffected_action": "FocusPane"
+        }
+      },
+      {
+        "case_id": "error-uncached",
+        "input": {
+          "connection": "error",
+          "cached": false
+        },
+        "expected": {
+          "availability": "disabled",
+          "scope": "combined",
+          "action": "FocusPane",
+          "reason": "error",
+          "inventory": "unknown",
+          "pane_count": null,
+          "unaffected_owner": ["local", "session-local", "epoch-local-1"],
+          "unaffected_action": "FocusPane"
+        }
+      },
+      {
+        "case_id": "offline-cached",
+        "input": {
+          "connection": "offline",
+          "cached": true
+        },
+        "expected": {
+          "availability": "disabled",
+          "scope": "combined",
+          "action": "FocusPane",
+          "reason": "offline",
+          "inventory": "stale",
+          "pane_count": 2,
+          "unaffected_owner": ["local", "session-local", "epoch-local-1"],
+          "unaffected_action": "FocusPane"
+        }
+      },
+      {
+        "case_id": "offline-uncached",
+        "input": {
+          "connection": "offline",
+          "cached": false
+        },
+        "expected": {
+          "availability": "disabled",
+          "scope": "combined",
+          "action": "FocusPane",
+          "reason": "offline",
+          "inventory": "unknown",
+          "pane_count": null,
+          "unaffected_owner": ["local", "session-local", "epoch-local-1"],
+          "unaffected_action": "FocusPane"
+        }
+      },
+      {
+        "case_id": "empty-inventory",
+        "input": {
+          "inventory": "success-empty"
+        },
+        "expected": {
+          "availability": "unavailable",
+          "scope": "combined",
+          "action": "none",
+          "reason": "no-panes",
+          "pane_count": 0
+        }
+      },
+      {
+        "case_id": "unknown-inventory",
+        "input": {
+          "inventory": "failed"
+        },
+        "expected": {
+          "availability": "unavailable",
+          "scope": "combined",
+          "action": "none",
+          "reason": "workspace-list-unavailable",
+          "pane_count": null
+        }
+      },
+      {
+        "case_id": "agent-provider-failed",
+        "input": {
+          "agent_provider": "failed"
+        },
+        "expected": {
+          "availability": "available",
+          "scope": "combined",
+          "action": "FocusPane",
+          "reason": "agent-metadata-unknown",
+          "pane_count": 2,
+          "agent_metadata": "unknown"
+        }
+      },
+      {
+        "case_id": "target-deleted",
+        "input": {
+          "target_validation": "deleted"
+        },
+        "expected": {
+          "availability": "disabled",
+          "scope": "combined",
+          "action": "FocusPane",
+          "reason": "target-deleted",
+          "selection": "retain-disabled-target"
+        }
+      },
+      {
+        "case_id": "target-wrong-owner",
+        "input": {
+          "target_validation": "wrong-owner"
+        },
+        "expected": {
+          "availability": "disabled",
+          "scope": "combined",
+          "action": "FocusPane",
+          "reason": "target-wrong-owner",
+          "selection": "retain-disabled-target"
+        }
+      },
+      {
+        "case_id": "target-wrong-session",
+        "input": {
+          "target_validation": "wrong-session"
+        },
+        "expected": {
+          "availability": "disabled",
+          "scope": "combined",
+          "action": "FocusPane",
+          "reason": "target-wrong-session",
+          "selection": "retain-disabled-target"
+        }
+      },
+      {
+        "case_id": "target-wrong-ancestry",
+        "input": {
+          "target_validation": "wrong-ancestry"
+        },
+        "expected": {
+          "availability": "disabled",
+          "scope": "combined",
+          "action": "FocusPane",
+          "reason": "target-wrong-ancestry",
+          "selection": "retain-disabled-target"
+        }
+      },
+      {
+        "case_id": "target-wrong-incarnation",
+        "input": {
+          "target_validation": "wrong-incarnation"
+        },
+        "expected": {
+          "availability": "disabled",
+          "scope": "combined",
+          "action": "FocusPane",
+          "reason": "target-wrong-incarnation",
+          "selection": "retain-disabled-target"
+        }
+      },
+      {
+        "case_id": "target-wrong-revision",
+        "input": {
+          "target_validation": "wrong-revision"
+        },
+        "expected": {
+          "availability": "disabled",
+          "scope": "combined",
+          "action": "FocusPane",
+          "reason": "target-wrong-revision",
+          "selection": "retain-disabled-target"
+        }
+      },
+      {
+        "case_id": "transport-malformed-json",
+        "input": {
+          "transport": "malformed-json"
+        },
+        "expected": {
+          "availability": "unavailable",
+          "scope": "combined",
+          "action": "FocusPane",
+          "reason": "malformed-json",
+          "outcome": "failed",
+          "history": "unchanged",
+          "retry": false
+        }
+      },
+      {
+        "case_id": "transport-truncated-output",
+        "input": {
+          "transport": "truncated-output"
+        },
+        "expected": {
+          "availability": "unavailable",
+          "scope": "combined",
+          "action": "FocusPane",
+          "reason": "truncated-output",
+          "outcome": "failed",
+          "history": "unchanged",
+          "retry": false
+        }
+      },
+      {
+        "case_id": "transport-timeout",
+        "input": {
+          "transport": "timeout"
+        },
+        "expected": {
+          "availability": "unavailable",
+          "scope": "combined",
+          "action": "FocusPane",
+          "reason": "timeout",
+          "outcome": "unknown",
+          "history": "unchanged",
+          "retry": false
+        }
+      },
+      {
+        "case_id": "transport-request-failed",
+        "input": {
+          "transport": "request-failed"
+        },
+        "expected": {
+          "availability": "unavailable",
+          "scope": "combined",
+          "action": "FocusPane",
+          "reason": "request-failed",
+          "outcome": "failed",
+          "history": "unchanged",
+          "retry": false
+        }
+      },
+      {
+        "case_id": "transport-ack-negative",
+        "input": {
+          "transport": "ack-negative"
+        },
+        "expected": {
+          "availability": "unavailable",
+          "scope": "combined",
+          "action": "FocusPane",
+          "reason": "ack-negative",
+          "outcome": "failed",
+          "history": "unchanged",
+          "retry": false
+        }
+      },
+      {
+        "case_id": "transport-ack-invalid",
+        "input": {
+          "transport": "ack-invalid"
+        },
+        "expected": {
+          "availability": "unavailable",
+          "scope": "combined",
+          "action": "FocusPane",
+          "reason": "ack-invalid",
+          "outcome": "failed",
+          "history": "unchanged",
+          "retry": false
+        }
+      },
+      {
+        "case_id": "transport-ack-lost",
+        "input": {
+          "transport": "ack-lost"
+        },
+        "expected": {
+          "availability": "unavailable",
+          "scope": "combined",
+          "action": "FocusPane",
+          "reason": "ack-lost",
+          "outcome": "unknown",
+          "history": "unchanged",
+          "retry": false
+        }
+      },
+      {
+        "case_id": "native-opened",
+        "input": {
+          "native_flow": "opened",
+          "target": ["void-dev", "session-remote", "epoch-remote-1", "machine", "void-dev"]
+        },
+        "expected": {
+          "availability": "handed-off",
+          "scope": "combined",
+          "action": "NativeNewWorkspace",
+          "reason": "prompt-opened",
+          "created_count": 0,
+          "history": "unchanged",
+          "retry": false
+        }
+      },
+      {
+        "case_id": "native-cancelled",
+        "input": {
+          "native_flow": "cancelled",
+          "target": ["void-dev", "session-remote", "epoch-remote-1", "machine", "void-dev"]
+        },
+        "expected": {
+          "availability": "cancelled",
+          "scope": "combined",
+          "action": "NativeNewWorkspace",
+          "reason": "prompt-cancelled",
+          "created_count": 0,
+          "history": "unchanged",
+          "retry": false
+        }
+      },
+      {
+        "case_id": "native-created",
+        "input": {
+          "native_flow": "created",
+          "target": ["void-dev", "session-remote", "epoch-remote-1", "machine", "void-dev"]
+        },
+        "expected": {
+          "availability": "completed",
+          "scope": "combined",
+          "action": "NativeNewWorkspace",
+          "reason": "workspace-created",
+          "created_count": 1,
+          "history": "acknowledged-transition-only",
+          "retry": false
+        }
+      },
+      {
+        "case_id": "native-failed",
+        "input": {
+          "native_flow": "failed",
+          "target": ["void-dev", "session-remote", "epoch-remote-1", "machine", "void-dev"]
+        },
+        "expected": {
+          "availability": "unavailable",
+          "scope": "combined",
+          "action": "NativeNewWorkspace",
+          "reason": "prompt-failed",
+          "created_count": 0,
+          "history": "unchanged",
+          "retry": false
+        }
+      },
+      {
+        "case_id": "native-unknown",
+        "input": {
+          "native_flow": "unknown",
+          "target": ["void-dev", "session-remote", "epoch-remote-1", "machine", "void-dev"]
+        },
+        "expected": {
+          "availability": "unavailable",
+          "scope": "combined",
+          "action": "NativeNewWorkspace",
+          "reason": "completion-unknown",
+          "created_count": null,
+          "history": "unchanged",
+          "retry": false
+        }
+      }
+    ]
+  },
+  "expected": {
+    "invariants": {
+      "no_ssh": true,
+      "no_attach": true,
+      "no_direct_create_fallback": true,
+      "no_process_server_retry": true,
+      "failures_keep_picker_open": true
+    },
+    "case_count": 42
+  }
+}

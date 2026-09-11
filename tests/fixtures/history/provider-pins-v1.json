@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "provider_owner": "00000000000000000000000000000001",
+  "records": [
+    {
+      "id": "00000000000000000000000000000002",
+      "preference": {
+        "kind": "provider",
+        "key": {
+          "owner": "00000000000000000000000000000001",
+          "namespace": "command",
+          "provider": "fixture",
+          "item": "work",
+          "action": "open {id}",
+          "operation": { "kind": "command" }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,7 @@
+{
+  "status": "blocked",
+  "production_evidence": "ordinary server acknowledgement only",
+  "unsupported_recording": ["exact ordinary focus", "provider completion", "workspace creation", "template application", "prompt accepted", "prompt cancelled", "prompt outcome unknown"],
+  "required_before_replay": ["authorized invoking client", "unexpired client scope", "durable machine/session/incarnation", "acknowledged previous and current workspace ancestry"],
+  "future_cases": ["pane and tab normalize to workspace", "unchanged workspace ignored", "different client isolated", "different session isolated", "restarted incarnation isolated", "missing or expired evidence rejected", "duplicate acknowledgement ignored"]
+}

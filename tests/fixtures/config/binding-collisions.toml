@@ -1,0 +1,21 @@
+# Deliberately reversed names to catch dependence on map insertion order.
+[picker]
+vim_mode = true
+directory_template = "fixture.toml"
+directory_template_key = "ctrl-p"
+focus_cycle_key = "CTRL+P"
+refresh_key = "^p"
+
+[picker.filter_keys]
+zoxide = "ctrl-p"
+unknown = "ctrl-v"
+server = "ctrl-o"
+root = "ctrl-j"
+projects = "ctrl-g"
+project = "ctrl-p"
+plugin = "ctrl-u"
+open = "ctrl-b"
+agents = "ctrl-e"
+agent = "ctrl-c"
+quick = "not-a-key"
+session = "ctrl-x"

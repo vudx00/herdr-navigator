@@ -1,0 +1,60 @@
+{
+  "fixture_schema": "navigation-n01-v1",
+  "files": [
+    {
+      "path": "hypothetical-client/capability-failure-cases.json",
+      "evidence": "synthetic-hypothetical",
+      "herdr_version": null
+    },
+    {
+      "path": "hypothetical-client/identity-collisions.json",
+      "evidence": "synthetic-hypothetical",
+      "herdr_version": null
+    },
+    {
+      "path": "hypothetical-client/six-workspaces-nine-panes.json",
+      "evidence": "synthetic-hypothetical",
+      "herdr_version": null
+    },
+    {
+      "path": "ordinary-server/0.7.3/agent-list.json",
+      "evidence": "inherited-parser-sample",
+      "herdr_version": "0.7.3"
+    },
+    {
+      "path": "ordinary-server/0.7.3/workspace-list.json",
+      "evidence": "inherited-parser-sample",
+      "herdr_version": "0.7.3"
+    },
+    {
+      "path": "ordinary-server/0.9.0/pane-focus-help.txt",
+      "evidence": "installed-offline-metadata",
+      "herdr_version": "0.9.0"
+    },
+    {
+      "path": "ordinary-server/0.9.0/pane-list-help.txt",
+      "evidence": "installed-offline-metadata",
+      "herdr_version": "0.9.0"
+    },
+    {
+      "path": "ordinary-server/0.9.0/schema-excerpts.json",
+      "evidence": "installed-offline-metadata",
+      "herdr_version": "0.9.0"
+    },
+    {
+      "path": "ordinary-server/0.9.0/tab-focus-help.txt",
+      "evidence": "installed-offline-metadata",
+      "herdr_version": "0.9.0"
+    },
+    {
+      "path": "ordinary-server/0.9.0/version.txt",
+      "evidence": "installed-offline-metadata",
+      "herdr_version": "0.9.0"
+    },
+    {
+      "path": "ordinary-server/0.9.0/workspace-focus-help.txt",
+      "evidence": "installed-offline-metadata",
+      "herdr_version": "0.9.0"
+    }
+  ]
+}

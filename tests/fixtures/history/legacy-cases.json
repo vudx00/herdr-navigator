@@ -1,0 +1,9 @@
+[
+  {"name":"valid-looking workspace has no owner", "pins":"[\"workspace:w1\"]", "values":["workspace:w1"]},
+  {"name":"ambiguous bare ids stay distinct unresolved text", "pins":"[\"workspace:w1\",\"agent:w1:p1\"]", "values":["workspace:w1","agent:w1:p1"]},
+  {"name":"unknown and unavailable providers", "pins":"[\"unknown:opaque\",\"path:/missing/project\"]", "values":["unknown:opaque","path:/missing/project"]},
+  {"name":"repeated legacy keys import once", "pins":"[\"workspace:w1\",\"workspace:w1\"]", "values":["workspace:w1"]},
+  {"name":"malformed document", "pins":"[", "error":true},
+  {"name":"incomplete entry", "pins":"[\"\"]", "error":true},
+  {"name":"wrong entry type", "pins":"[17]", "error":true}
+]

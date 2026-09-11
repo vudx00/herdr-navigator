@@ -1,0 +1,26 @@
+{
+  "id": "cli:agent:list",
+  "result": {
+    "type": "agent_list",
+    "agents": [
+      {
+        "agent": "claude",
+        "agent_session": {
+          "agent": "claude",
+          "kind": "id",
+          "source": "herdr:claude",
+          "value": "58f4-session"
+        },
+        "agent_status": "working",
+        "cwd": "/tmp",
+        "focused": true,
+        "foreground_cwd": "/tmp",
+        "pane_id": "w43:p1",
+        "revision": 0,
+        "tab_id": "w43:t1",
+        "terminal_id": "term_1",
+        "workspace_id": "w43"
+      }
+    ]
+  }
+}

@@ -5,10 +5,19 @@ All notable changes to this project are documented here.
 ## [Unreleased]
 
 ### Added
+- Offline navigation contract fixtures, versioned ordinary-server schema/help
+  evidence, and a regression matrix for planned machine/pane navigation.
+  This adds test coverage only, not navigation behavior.
 - Alt-J and Alt-K move down and up alongside the arrow keys, including while
   typing a search query.
 
 ### Fixed
+- Development picker action failures now appear inline without a blocking
+  acknowledgement prompt. Ordinary focus keeps the terminal active; Attach and
+  Run still suspend and resume it. Terminal cleanup attempts raw-mode disable,
+  alternate-screen exit and cursor restoration independently after early errors.
+- The development picker shows `Server scope: owner unknown` without requiring
+  preview. This partial S01 lifecycle work does not complete N07 or qualify a release.
 - Fuzzy matching now scores each visible entry field independently, preventing
   matches that span unrelated title/path fields and prioritizing exact names
   and shorter matching paths consistently across all search engines.

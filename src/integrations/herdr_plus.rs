@@ -1,15 +1,14 @@
 use std::{
-    cell::OnceCell,
-    env, fs,
+    fs,
     path::{Path, PathBuf},
 };
 
 use serde_json::Value;
 
 use crate::{
-    herdr::{herdr_json, run_herdr},
-    model::{Entry, EntryAction, Project, Source},
-    paths::{expand_path, herdr_plus_projects_dir, home},
+    model::{Entry, EntryAction, EntryIdentity, Project, ProviderId, Source},
+    navigation::server::OrdinaryServer,
+    paths::{expand_path, herdr_plus_projects_dir, OwnedPath},
 };
 
 pub(crate) fn collect_projects() -> Vec<Entry> {
@@ -26,30 +25,42 @@ pub(crate) fn collect_projects() -> Vec<Entry> {
         let Ok(project) = load_project_file(&path) else {
             continue;
         };
-        let p = expand_path(&project.working_dir);
-        out.push(Entry {
-            source: Source::Project,
-            title: project.name.clone(),
-            subtitle: project.description.clone(),
-            path: p,
-            workspace_id: None,
-            workspace_label: None,
-            agent_target: None,
-            project: Some(project),
-            action: EntryAction::OpenProject,
-            source_label: None,
-            search_terms: vec![],
-            canonical_key: OnceCell::new(),
-        });
+        if !project.working_dir.trim().is_empty() {
+            out.push(project_entry(&path, project));
+        }
     }
     out
 }
 
-pub(crate) fn load_project_template(name: &str) -> Result<Project, String> {
-    load_project_file(&herdr_plus_projects_dir().join(template_filename(name)?))
+fn project_entry(path: &Path, project: Project) -> Entry {
+    let p = expand_path(&project.working_dir);
+    let mut entry = Entry::new(
+        EntryIdentity::provider(
+            "herdr-plus-projects",
+            &path.display().to_string(),
+            "open-project",
+        )
+        .unwrap(),
+        crate::model::EntryData {
+            source: Source::Project,
+            title: project.name.clone(),
+            subtitle: project.description.clone(),
+            path: Some(OwnedPath::process(p)),
+            workspace_id: None,
+            workspace_label: None,
+            agent: None,
+            project: Some(project),
+            action: EntryAction::OpenProject,
+            source_label: None,
+            search_terms: vec![],
+            provenance: [ProviderId::new("herdr-plus-projects").unwrap()].into(),
+        },
+    );
+    entry.template_file = Some(OwnedPath::process(path.to_path_buf()));
+    entry
 }
 
-fn template_filename(name: &str) -> Result<PathBuf, String> {
+pub(crate) fn template_filename(name: &str) -> Result<PathBuf, String> {
     let name = name.trim();
     if name.is_empty() || Path::new(name).file_name().and_then(|part| part.to_str()) != Some(name) {
         return Err("directory_template must be a Herdr Plus project filename".into());
@@ -71,25 +82,34 @@ fn load_project_file(path: &Path) -> Result<Project, String> {
 }
 
 pub(crate) fn quick_actions_entry() -> Entry {
-    Entry {
-        source: Source::QuickAction,
-        title: "Herdr Plus Quick Actions".into(),
-        subtitle: "open the Herdr Plus quick-action picker".into(),
-        path: env::current_dir().unwrap_or_else(|_| home()),
-        workspace_id: None,
-        workspace_label: None,
-        agent_target: None,
-        project: None,
-        action: EntryAction::InvokePluginAction {
-            action: "cloudmanic.herdr-plus.quick-actions".into(),
+    Entry::new(
+        EntryIdentity::provider(
+            "herdr-plus",
+            "quick-actions",
+            "cloudmanic.herdr-plus.quick-actions",
+        )
+        .unwrap(),
+        crate::model::EntryData {
+            source: Source::QuickAction,
+            title: "Herdr Plus Quick Actions".into(),
+            subtitle: "open the Herdr Plus quick-action picker".into(),
+            path: None,
+            workspace_id: None,
+            workspace_label: None,
+            agent: None,
+            project: None,
+            action: EntryAction::InvokePluginAction {
+                action: "cloudmanic.herdr-plus.quick-actions".into(),
+            },
+            source_label: None,
+            search_terms: vec![],
+            provenance: [ProviderId::new("herdr-plus").unwrap()].into(),
         },
-        source_label: None,
-        search_terms: vec![],
-        canonical_key: OnceCell::new(),
-    }
+    )
 }
 
 pub(crate) fn bootstrap_project_tabs(
+    server: &OrdinaryServer,
     project: &Project,
     create_json: &Value,
     cwd: &Path,
@@ -105,18 +125,20 @@ pub(crate) fn bootstrap_project_tabs(
         .pointer("/result/root_pane/pane_id")
         .and_then(|v| v.as_str())
         .ok_or("workspace create did not return root pane")?;
-    build_project_tabs(project, workspace_id, Some(root_pane), cwd)
+    build_project_tabs(server, project, workspace_id, Some(root_pane), cwd)
 }
 
 pub(crate) fn append_project_tabs(
+    server: &OrdinaryServer,
     project: &Project,
     workspace_id: &str,
     cwd: &Path,
 ) -> Result<(), String> {
-    build_project_tabs(project, workspace_id, None, cwd)
+    build_project_tabs(server, project, workspace_id, None, cwd)
 }
 
 fn build_project_tabs(
+    server: &OrdinaryServer,
     project: &Project,
     workspace_id: &str,
     first_root: Option<&str>,
@@ -127,24 +149,25 @@ fn build_project_tabs(
     for (tab_index, tab) in project.tabs.iter().enumerate() {
         let tab_root = match (tab_index, first_root) {
             (0, Some(root_pane)) => {
-                let _ = run_herdr(["tab", "rename", &format!("{workspace_id}:t1"), &tab.name]);
+                server.run(["tab", "rename", &format!("{workspace_id}:t1"), &tab.name])?;
                 root_pane.to_string()
             }
-            _ => herdr_json([
-                "tab",
-                "create",
-                "--workspace",
-                workspace_id,
-                "--cwd",
-                &cwd.display().to_string(),
-                "--label",
-                &tab.name,
-                "--no-focus",
-            ])?
-            .pointer("/result/root_pane/pane_id")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| format!("tab create did not return root pane for {}", tab.name))?
-            .to_string(),
+            _ => server
+                .json([
+                    "tab",
+                    "create",
+                    "--workspace",
+                    workspace_id,
+                    "--cwd",
+                    &cwd.display().to_string(),
+                    "--label",
+                    &tab.name,
+                    "--no-focus",
+                ])?
+                .pointer("/result/root_pane/pane_id")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| format!("tab create did not return root pane for {}", tab.name))?
+                .to_string(),
         };
 
         let mut previous_pane = tab_root.clone();
@@ -153,31 +176,32 @@ fn build_project_tabs(
                 tab_root.clone()
             } else {
                 let direction = pane.split.as_deref().unwrap_or("down");
-                herdr_json([
-                    "pane",
-                    "split",
-                    &previous_pane,
-                    "--direction",
-                    direction,
-                    "--no-focus",
-                ])?
-                .pointer("/result/pane/pane_id")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| {
-                    format!(
-                        "pane split did not return pane {} for {}",
-                        pane_index + 1,
-                        tab.name
-                    )
-                })?
-                .to_string()
+                server
+                    .json([
+                        "pane",
+                        "split",
+                        &previous_pane,
+                        "--direction",
+                        direction,
+                        "--no-focus",
+                    ])?
+                    .pointer("/result/pane/pane_id")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| {
+                        format!(
+                            "pane split did not return pane {} for {}",
+                            pane_index + 1,
+                            tab.name
+                        )
+                    })?
+                    .to_string()
             };
             if let Some(label) = pane
                 .label
                 .as_deref()
                 .filter(|label| !label.trim().is_empty())
             {
-                let _ = run_herdr(["pane", "rename", &pane_id, label.trim()]);
+                server.run(["pane", "rename", &pane_id, label.trim()])?;
             }
             if let Some(command) = pane
                 .command
@@ -191,7 +215,7 @@ fn build_project_tabs(
     }
 
     for (pane, command) in runs {
-        let _ = run_herdr(["pane", "run", &pane, &command]);
+        server.run(["pane", "run", &pane, &command])?;
     }
     Ok(())
 }
@@ -199,6 +223,7 @@ fn build_project_tabs(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::env;
 
     #[test]
     fn loads_reusable_template_by_safe_filename() {
@@ -336,11 +361,20 @@ command = "tail"
         });
         let previous_bin = env::var_os("HERDR_BIN_PATH");
         env::set_var("HERDR_BIN_PATH", &fake);
-        let bootstrap_result =
-            bootstrap_project_tabs(&project, &create_json, Path::new("/tmp/project"));
+        let bootstrap_result = bootstrap_project_tabs(
+            &OrdinaryServer::inherited(),
+            &project,
+            &create_json,
+            Path::new("/tmp/project"),
+        );
         let bootstrap_calls = fs::read_to_string(&log).unwrap();
         fs::write(&log, "").unwrap();
-        let append_result = append_project_tabs(&project, "w1", Path::new("/tmp/project"));
+        let append_result = append_project_tabs(
+            &OrdinaryServer::inherited(),
+            &project,
+            "w1",
+            Path::new("/tmp/project"),
+        );
         let append_calls = fs::read_to_string(&log).unwrap();
         match previous_bin {
             Some(path) => env::set_var("HERDR_BIN_PATH", path),
@@ -376,5 +410,26 @@ command = "tail"
         assert!(!append_calls
             .iter()
             .any(|call| call.starts_with("tab rename")));
+    }
+    #[test]
+    fn project_template_file_identity_is_distinct_from_cwd_and_labels() {
+        let project = Project {
+            name: "same".into(),
+            description: String::new(),
+            working_dir: "/tmp".into(),
+            tabs: vec![],
+        };
+        let first = project_entry(Path::new("first.toml"), project.clone());
+        let second = project_entry(Path::new("second.toml"), project.clone());
+        assert_eq!(first.path_text(), second.path_text());
+        assert_ne!(first.key(), second.key());
+        let mut changed = project;
+        changed.name = "renamed".into();
+        changed.working_dir = "/different".into();
+        assert_eq!(
+            first.key(),
+            project_entry(Path::new("first.toml"), changed).key()
+        );
+        assert!(quick_actions_entry().path.is_none());
     }
 }

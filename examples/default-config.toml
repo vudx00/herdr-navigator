@@ -3,6 +3,11 @@
 #   $(herdr plugin config-dir herdr-navigator)/config.toml
 
 [picker]
+# Rollout requests only. Merged presentation is unavailable; legacy stays active.
+presentation = "legacy" # legacy | merged
+# Reserved and inactive. These do not add commands or help hints yet.
+focus_cycle_key = "f6"
+refresh_key = "f8"
 # What happens after selecting an entry:
 # - true: focus an already-open workspace for the selected path
 # - false: always use create_missing behavior
@@ -86,6 +91,9 @@ enabled = true
 pin_previous = true
 
 [sources]
+# Opt in to every pane on the routed server. false keeps agent-only pane rows.
+panes = false
+
 # Existing Herdr workspaces. Selecting focuses the workspace.
 open_workspaces = true
 
@@ -99,7 +107,7 @@ zoxide = true
 # Direct filesystem scan of [[roots]] below.
 roots = true
 
-# Agent panes from Herdr pane metadata. Selecting focuses the agent.
+# Join agent metadata to actual panes. Enter focuses the exact pane ID.
 agents = true
 
 # Remote Herdr targets from remote entries in [sessions] below.

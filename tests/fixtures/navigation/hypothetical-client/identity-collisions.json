@@ -1,0 +1,93 @@
+{
+  "fixture_schema": "navigation-n01-v1",
+  "evidence": "synthetic-hypothetical",
+  "case_id": "identity-collisions",
+  "input": {
+    "owners": [
+      ["local", "session-local", "epoch-local-1"],
+      ["void-dev", "session-remote", "epoch-remote-1"],
+      ["void-dev", "session-other", "epoch-remote-1"],
+      ["void-dev", "session-remote", "epoch-remote-2"]
+    ],
+    "shared": {
+      "workspace_id": "w1",
+      "tab_id": "w1:t1",
+      "pane_id": "w1:p1",
+      "terminal_id": "not-a-pane-id",
+      "label": "herdr-navigator",
+      "cwd": "/fixture/shared/herdr-navigator",
+      "home": null
+    }
+  },
+  "expected": {
+    "counts": {
+      "owners": 4,
+      "workspaces": 4,
+      "tabs": 4,
+      "panes": 4
+    },
+    "destinations": [
+      {
+        "identity": ["local", "session-local", "epoch-local-1", "workspace", "w1"],
+        "ancestors": [],
+        "action": "FocusWorkspace"
+      },
+      {
+        "identity": ["local", "session-local", "epoch-local-1", "tab", "w1:t1"],
+        "ancestors": ["w1"],
+        "action": "FocusTab"
+      },
+      {
+        "identity": ["local", "session-local", "epoch-local-1", "pane", "w1:p1"],
+        "ancestors": ["w1", "w1:t1"],
+        "action": "FocusPane"
+      },
+      {
+        "identity": ["void-dev", "session-remote", "epoch-remote-1", "workspace", "w1"],
+        "ancestors": [],
+        "action": "FocusWorkspace"
+      },
+      {
+        "identity": ["void-dev", "session-remote", "epoch-remote-1", "tab", "w1:t1"],
+        "ancestors": ["w1"],
+        "action": "FocusTab"
+      },
+      {
+        "identity": ["void-dev", "session-remote", "epoch-remote-1", "pane", "w1:p1"],
+        "ancestors": ["w1", "w1:t1"],
+        "action": "FocusPane"
+      },
+      {
+        "identity": ["void-dev", "session-other", "epoch-remote-1", "workspace", "w1"],
+        "ancestors": [],
+        "action": "FocusWorkspace"
+      },
+      {
+        "identity": ["void-dev", "session-other", "epoch-remote-1", "tab", "w1:t1"],
+        "ancestors": ["w1"],
+        "action": "FocusTab"
+      },
+      {
+        "identity": ["void-dev", "session-other", "epoch-remote-1", "pane", "w1:p1"],
+        "ancestors": ["w1", "w1:t1"],
+        "action": "FocusPane"
+      },
+      {
+        "identity": ["void-dev", "session-remote", "epoch-remote-2", "workspace", "w1"],
+        "ancestors": [],
+        "action": "FocusWorkspace"
+      },
+      {
+        "identity": ["void-dev", "session-remote", "epoch-remote-2", "tab", "w1:t1"],
+        "ancestors": ["w1"],
+        "action": "FocusTab"
+      },
+      {
+        "identity": ["void-dev", "session-remote", "epoch-remote-2", "pane", "w1:p1"],
+        "ancestors": ["w1", "w1:t1"],
+        "action": "FocusPane"
+      }
+    ],
+    "path_policy": "opaque-owner-qualified-string; no local canonicalization, expansion, existence check, or HOME fallback"
+  }
+}

@@ -3,14 +3,23 @@ use std::{
     process::{self, Command},
 };
 
+mod actions;
 mod app;
 mod config;
 mod herdr;
+mod history;
 mod integrations;
 mod keymap;
 mod matcher;
 mod model;
+mod navigation;
+#[cfg(test)]
+#[path = "navigation/test_support.rs"]
+mod navigation_test_support;
 mod paths;
+// N08 compiles the pure projection before N10/N11 supply its active consumer.
+#[allow(dead_code)]
+mod picker;
 mod sources;
 mod theme;
 mod tui;
@@ -23,6 +32,12 @@ use theme::Theme;
 use tui::tui_loop;
 
 fn main() {
+    // Maintenance must not load App/config, capture a route, or invoke Herdr.
+    if env::args().nth(1).as_deref() == Some("history") {
+        history_command();
+        return;
+    }
+    let _ = herdr::invocation();
     match env::args().nth(1).as_deref() {
         Some("open") => open_picker(),
         Some("open-side") => open_side_picker(),
@@ -30,9 +45,33 @@ fn main() {
         Some("ui") => run_ui(env::args().nth(2).as_deref() == Some("--side")),
         Some("list") => debug_list(),
         _ => {
-            eprintln!("usage: herdr-navigator <open|open-side|jump-back|ui|list>");
+            eprintln!("usage: herdr-navigator <open|open-side|jump-back|ui|list|history list|history remove RECORD_ID>");
             process::exit(2);
         }
+    }
+}
+
+fn history_command() {
+    let args: Vec<_> = env::args().skip(2).collect();
+    if !matches!(args.as_slice(), [command] if command == "list")
+        && !matches!(args.as_slice(), [command, _] if command == "remove")
+    {
+        eprintln!("usage: herdr-navigator history <list|remove RECORD_ID>");
+        process::exit(2);
+    }
+    let mut store = history::Store::open(paths::plugin_config_dir());
+    let result = match args.as_slice() {
+        [command] if command == "list" => store.records().and_then(|records| {
+            serde_json::to_string_pretty(&records)
+                .map(|json| println!("{json}"))
+                .map_err(|e| e.to_string())
+        }),
+        [_, id] => store.remove(id),
+        _ => unreachable!(),
+    };
+    if let Err(error) = result {
+        eprintln!("{error}");
+        process::exit(1);
     }
 }
 
@@ -162,7 +201,7 @@ fn debug_list() {
     let mut app = App::new(Config::load(), Theme::load(true));
     app.refresh();
     for e in app.entries {
-        println!("{}\t{}\t{}", e.source_name(), e.title, e.path.display());
+        println!("{}\t{}\t{}", e.source_name(), e.title, e.path_text());
     }
 }
 

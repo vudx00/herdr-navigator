@@ -91,8 +91,8 @@ Herdr's built-in navigation remains the simpler choice for a single entity type.
 
 | Feature | What it does |
 | --- | --- |
-| **Last Workspace** | `herdr-navigator.jump-back` toggles between the current and previously visited local workspace. |
-| **Pin** | `Ctrl-B` marks important entries and keeps them ahead of the normal source order. |
+| **Last Workspace** | Blocked in this development branch. Ordinary focus acknowledgements cannot qualify invoking-client workspace history. |
+| **Pin** | `Ctrl-B` saves provider preferences and keeps marked entries ahead of the normal source order. Live workspace/pane marks last only for this invocation and observation scope. |
 | **Open with Template** | `Alt-Enter` by default applies one reusable Herdr Plus tabs/panes template to any zoxide/root directory, creating its workspace or appending fresh template tabs when already open. |
 
 ## What it can open
@@ -100,7 +100,7 @@ Herdr's built-in navigation remains the simpler choice for a single entity type.
 | Source | Data | Enter does |
 | --- | --- | --- |
 | `workspace` | `herdr workspace list` + pane cwd | Focus the exact workspace |
-| `agent` | `herdr agent list` | Focus the agent pane |
+| `agent` | Agent metadata joined to workspace/tab/pane inventory | Focus the exact pane |
 | `project` | Herdr Plus project TOML | Reuse or create a project workspace and apply tabs and split panes |
 | `session` | Herdr sessions + configured local entries | Attach the local session |
 | `server` | Configured remote targets | Hand off to the remote Herdr server |
@@ -110,6 +110,22 @@ Herdr's built-in navigation remains the simpler choice for a single entity type.
 | `plugin` | Command/JSON integrations | Run the configured open command |
 
 Every source can be disabled. Missing optional tools degrade quietly.
+
+### Server-scoped panes in the development branch
+
+Set `sources.panes = true` to list every pane on the routed ordinary server. The default remains `false`, with `sources.agents = true` showing only panes linked to agent metadata. With both enabled, each pane appears once. Turning agents off removes enrichment; turning `open_workspaces` off hides workspace rows but keeps their ancestry and reuse index.
+
+Ordinary panes use the existing `open` source bucket. Enriched panes use `agent`. Titles prefer a manual pane label, then the agent name, a useful reported title, or a Navigator-assigned `Pane N`. Workspace and tab breadcrumbs remain visible, including a tab labeled `1`. Agent operators read metadata even when the manual title differs. Ctrl-X never closes a pane or its parent workspace.
+
+Enter sends exact `pane.focus` with `pane_id` through the frozen ordinary-server route. Terminal IDs are metadata only. This requires an explicit inherited Unix socket and the N04 adapter's verified Herdr 0.9.0/protocol 22 contract. An optional structured agent-list rejection leaves healthy panes usable with agent metadata marked unknown. Transport uncertainty still invalidates the scope and discards old reads. The query area reports inventory failures even when no row is selected.
+
+The header shows `Server scope: owner unknown`, even with preview off. The process host does not establish the server's owner. Socket paths and route credentials are not part of this label.
+
+Failed activation stays in the overlay or side picker with inline error text. There is no extra acknowledgement prompt, automatic retry, or failure-triggered refresh. `Unknown` means the server may have applied the mutation without an acknowledgement. Attach and Run still suspend the terminal and resume it on failure. Successful ordinary focus closes the overlay; the side picker refreshes and restores the selected identity. These paths have offline fake-terminal coverage, not live platform qualification.
+
+Process-owned folder/project creation and templates require the managed-plugin co-location contract and fresh action revalidation. Unknown ownership blocks them. A silent server restart at the same socket and version remains undetectable.
+
+This is not combined machine navigation or invoking-client focus. Machine rows and the native New workspace prompt remain unavailable. Merged rendering and F6/F8 remain inactive. Provider pins persist as installation-local preferences, but durable live-target marks and invoking-client jump-back remain incomplete. N07, S01 and the release gate stay open. See [the implementation plan](docs/implementation-plan.md) and [release hold](RELEASE.md#development-branch-release-hold).
 
 ## Keyboard workflow
 
@@ -142,7 +158,7 @@ normal split pane and therefore follows Herdr's normal host-binding precedence.
 
 Status glyphs follow Herdr's `prefix+g` visual language: `◉` blocked/attention, animated Braille spinner working, `●` idle, `✓` done, and `○` unknown. Diamond color priority is marked yellow, current accent/blue, then previous red. Selection uses `→`, and source trees use `▾`, `├─`, and `└─` markers.
 
-On the initial unfiltered view, the previous workspace stays first, followed by marked items and then the normal source order.
+On the initial unfiltered view, marked items precede the normal source order. No previous-workspace marker appears while qualified jump-back is unavailable.
 
 Structured search narrows large result sets:
 
@@ -163,29 +179,28 @@ Select an `open` or `agent` entry, or a `project`, `root`, or `zoxide` entry tha
 
 Navigator refuses to close the workspace that owns the picker; switch away first. Directories that are not open and server, session, quick-action, or plugin entries are left unchanged.
 
-### Jump Back
+### Pins and history maintenance
 
-Navigator remembers the workspace left by a successful local navigation. Bind the dedicated action for tmux-style current/previous toggling:
+Provider pins survive restart and provider absence. Navigator applies them only to fresh matching rows, without creating saved replacement rows or executing anything from disk. Keys include the provider namespace, item, configured action and template or attach identity. Labels, current workspace reuse and status do not identify a preference. A write must succeed before the visible mark changes.
 
-```toml
-[[keys.command]]
-key = "prefix+l"
-type = "plugin_action"
-command = "herdr-navigator.jump-back"
-description = "jump to previous workspace"
+Live workspace and pane marks remain in memory. Transport uncertainty invalidates their observation scope. Herdr 0.9.0/protocol 22 supplies no durable server incarnation, so Navigator does not persist replayable live IDs.
+
+Navigator stores preferences in `navigation-history.json` beside a stable `navigation-history.lock` in the existing plugin config directory. `HERDR_PLUGIN_CONFIG_DIR` overrides the default `~/.config/herdr/plugins/config/herdr-navigator`. Each App freezes an absolute directory at construction. The generated provider owner identifies this installation's preference store, not a machine or client. Do not share it as machine identity. Copying the store copies preferences only.
+
+Legacy `pinned-entries.json` values remain unresolved, even if one current row matches. The old bare `jump-back-workspace` value is retained as unresolved provenance, never replayed. Both legacy files stay byte-for-byte unchanged. Re-pin a fresh row deliberately, or remove unresolved records by their stable IDs:
+
+```sh
+herdr-navigator history list
+herdr-navigator history remove RECORD_ID
 ```
 
-The previous workspace can also stay pinned at the top of the initial picker view:
+These owner-only commands load no App or config and make no Herdr calls. Removal retains legacy source/value tombstones so unchanged input does not resurrect a record. Saved preferences remain when their provider is unavailable.
 
-```toml
-[jump_back]
-# Record local workspace transitions and enable the action.
-enabled = true
-# Pin the previous workspace only while the picker is unfiltered.
-pin_previous = true
-```
+Storage accepts at most 1 MiB per document, 4096 records including tombstones and 16 KiB per string. It never evicts records. Malformed, future-version, oversized, unreadable or unsafe files disable writes rather than becoming empty state. Unix transactions use a 250 ms advisory-lock wait budget, reload under that lock, sync a private sibling temp file, rename it and sync the directory. The lock file is never unlinked. Symlinks, nonregular files, hard links and group/other-writable store files or directories are rejected. A failure after rename reports uncertain durability. Reopen to inspect the saved result before another change; Navigator does not retry the toggle.
 
-If the previous workspace was closed, the next Jump Back clears the stale state and reports it.
+### Jump-back is blocked
+
+`herdr-navigator.jump-back` currently reports that qualified persistent history is unavailable. Existing `[jump_back]` settings and bindings do not restore replay. An exact ordinary focus acknowledgement is not an authorized invoking-client transition. Workspace lists, picker context and successful creation or provider completion cannot supply that evidence. No transition or prompt outcome records a previous workspace, and Navigator does not clear or replay the legacy file. N07 remains partial and S01 release qualification remains blocked.
 
 ### Persistent side pane
 

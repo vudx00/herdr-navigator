@@ -1,0 +1,37 @@
+# Old partial config. Missing fields must keep their legacy defaults.
+[picker]
+reuse_existing = false
+create_missing = false
+source_order = ["open_workspaces", "agents", "remote", "roots", "projects", "sessions"]
+source_priority_boost = 7
+agent_sort = "priority"
+preview = false
+detailed_rows = false
+root_cache_seconds = 90
+directory_template = "default.toml"
+directory_template_key = "option+enter"
+vim_mode = true
+vim_filter_search = true
+
+[picker.filter_keys]
+remote = "^g"
+
+[sources]
+open_workspaces = false
+agents = true
+servers = true
+sessions = false
+
+[jump_back]
+pin_previous = false
+
+[notifications]
+enabled = false
+audio = false
+
+[sessions]
+local = false
+
+[[sessions.entries]]
+name = "fixture remote"
+remote = "fixture-remote"

@@ -98,3 +98,105 @@ mod tests {
         let _ = fs::remove_dir_all(new);
     }
 }
+
+/// Reported paths remain text even when they happen to name a process-host file.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum OwnedPath {
+    Process {
+        owner: crate::navigation::ProcessHostRef,
+        path: PathBuf,
+    },
+    Reported {
+        scope: crate::model::ServerScope,
+        text: String,
+        home: Option<String>,
+    },
+}
+impl OwnedPath {
+    pub(crate) fn process(path: PathBuf) -> Self {
+        Self::Process {
+            owner: crate::navigation::ProcessHostRef,
+            path,
+        }
+    }
+    pub(crate) fn reported(scope: &crate::model::ServerScope, text: &str) -> Option<Self> {
+        (!text.is_empty()).then(|| Self::Reported {
+            scope: scope.clone(),
+            text: text.into(),
+            home: None,
+        })
+    }
+    pub(crate) fn process_path(&self) -> Result<&Path, String> {
+        match self {
+            Self::Process { path, .. } => Ok(path),
+            Self::Reported { .. } => {
+                Err("reported server path is not a process filesystem path".into())
+            }
+        }
+    }
+    pub(crate) fn text(&self) -> String {
+        match self {
+            Self::Process { path, .. } => path.display().to_string(),
+            Self::Reported { text, .. } => text.clone(),
+        }
+    }
+    pub(crate) fn display(&self) -> String {
+        let text = self.text();
+        let owner_home = match self {
+            Self::Process { .. } => Some(home().display().to_string()),
+            Self::Reported { home, .. } => home.clone(),
+        };
+        if let Some(home) = owner_home.filter(|home| !home.is_empty() && home != "/") {
+            if text == home {
+                return "~".into();
+            }
+            if let Some(rest) = text.strip_prefix(&format!("{home}/")) {
+                return format!("~/{rest}");
+            }
+        }
+        text
+    }
+}
+
+#[cfg(test)]
+mod ownership_tests {
+    use super::*;
+    use crate::{model::ServerScope, navigation::NavigationContext};
+
+    #[test]
+    fn foreign_paths_cannot_cross_the_process_filesystem_interface() {
+        let scope = ServerScope::ephemeral(1);
+        for text in [
+            "~",
+            "~/repo",
+            "$HOME/repo",
+            "/tmp",
+            &home().display().to_string(),
+        ] {
+            let path = OwnedPath::reported(&scope, text).unwrap();
+            assert!(path.process_path().is_err());
+            assert_eq!(path.text(), text);
+            assert_eq!(path.display(), text);
+        }
+        assert!(OwnedPath::reported(&scope, "").is_none());
+    }
+
+    #[test]
+    fn only_an_explicit_owner_home_shortens_a_reported_path() {
+        let path = OwnedPath::Reported {
+            scope: ServerScope::ephemeral(1),
+            text: "/owner/home/repo".into(),
+            home: Some("/owner/home".into()),
+        };
+        assert_eq!(path.display(), "~/repo");
+        assert!(path.process_path().is_err());
+    }
+
+    #[test]
+    fn process_paths_keep_filesystem_access_but_do_not_imply_server_ownership() {
+        let path = OwnedPath::process(std::env::temp_dir());
+        assert!(path.process_path().unwrap().is_dir());
+        assert!(NavigationContext::unmanaged().reuse_key(&path).is_err());
+        assert!(NavigationContext::colocated().reuse_key(&path).is_ok());
+    }
+}

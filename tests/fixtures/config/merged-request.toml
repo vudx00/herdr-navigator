@@ -1,0 +1,17 @@
+# Merged rendering remains unavailable. N05 enables panes independently.
+[picker]
+presentation = "merged"
+focus_cycle_key = "f6"
+refresh_key = "f8"
+vim_mode = true
+detailed_rows = false
+source_priority_boost = 999
+
+[sources]
+open_workspaces = false
+panes = true
+agents = true
+servers = true
+
+[jump_back]
+pin_previous = true

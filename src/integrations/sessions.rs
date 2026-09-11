@@ -1,13 +1,13 @@
-use std::{cell::OnceCell, env, path::PathBuf, process::Command};
+use std::{path::PathBuf, process::Command};
 
 use serde::Deserialize;
 use serde_json::Value;
 
 use crate::{
     config::{Config, SessionEntryConfig},
-    herdr::{herdr_bin, herdr_json},
-    model::{Entry, EntryAction, Source},
-    paths::home,
+    herdr::herdr_json,
+    model::{Entry, EntryAction, EntryIdentity, ProviderId, Source},
+    paths::OwnedPath,
 };
 
 #[derive(Debug, Deserialize)]
@@ -36,7 +36,15 @@ pub(crate) fn collect_sessions(config: &Config) -> Vec<Entry> {
             .sessions
             .entries
             .iter()
-            .filter(|entry| entry.remote.is_none())
+            .filter(|entry| {
+                entry.remote.is_none()
+                    && !entry
+                        .session
+                        .as_deref()
+                        .unwrap_or(&entry.name)
+                        .trim()
+                        .is_empty()
+            })
             .map(manual_session_entry),
     );
     entries
@@ -58,7 +66,11 @@ fn collect_local_sessions() -> Vec<Entry> {
             serde_json::from_value(json.pointer("/result").cloned().unwrap_or(Value::Null))
         })
         .unwrap_or(SessionList { sessions: vec![] });
-    list.sessions.into_iter().map(local_session_entry).collect()
+    list.sessions
+        .into_iter()
+        .filter(|session| !session.name.trim().is_empty())
+        .map(local_session_entry)
+        .collect()
 }
 
 fn local_session_entry(session: ListedSession) -> Entry {
@@ -77,106 +89,98 @@ fn local_session_entry(session: ListedSession) -> Entry {
     let path = session
         .session_dir
         .as_ref()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home().join(format!(".config/herdr/sessions/{}", session.name)));
-    Entry {
-        source: Source::Session,
-        title: session.name.clone(),
-        subtitle,
-        path,
-        workspace_id: None,
-        workspace_label: None,
-        agent_target: None,
-        project: None,
-        action: EntryAction::AttachSession {
-            name: session.name,
-            remote: None,
+        .map(|path| OwnedPath::process(PathBuf::from(path)));
+    Entry::new(
+        EntryIdentity::provider("sessions", &session.name, "attach").unwrap(),
+        crate::model::EntryData {
+            source: Source::Session,
+            title: session.name.clone(),
+            subtitle,
+            path,
+            workspace_id: None,
+            workspace_label: None,
+            agent: None,
+            project: None,
+            action: EntryAction::AttachSession {
+                name: session.name,
+                remote: None,
+            },
+            source_label: None,
+            search_terms: vec!["local".into(), "session".into()],
+            provenance: [ProviderId::new("sessions").unwrap()].into(),
         },
-        source_label: None,
-        search_terms: vec!["local".into(), "session".into()],
-        canonical_key: OnceCell::new(),
-    }
+    )
 }
 
 fn manual_session_entry(config: &SessionEntryConfig) -> Entry {
     let session = config.session.as_deref().unwrap_or(&config.name);
-    let path = home().join(format!(".config/herdr/sessions/{session}"));
+    let path = None;
     let mut search_terms = vec!["session".into(), session.into()];
     search_terms.extend(config.tags.iter().cloned());
-    Entry {
-        source: Source::Session,
-        title: config.name.clone(),
-        subtitle: format!("local session · {session}"),
-        path,
-        workspace_id: None,
-        workspace_label: None,
-        agent_target: None,
-        project: None,
-        action: EntryAction::AttachSession {
-            name: session.into(),
-            remote: None,
+    Entry::new(
+        EntryIdentity::provider("sessions", session, "attach").unwrap(),
+        crate::model::EntryData {
+            source: Source::Session,
+            title: config.name.clone(),
+            subtitle: format!("local session · {session}"),
+            path,
+            workspace_id: None,
+            workspace_label: None,
+            agent: None,
+            project: None,
+            action: EntryAction::AttachSession {
+                name: session.into(),
+                remote: None,
+            },
+            source_label: None,
+            search_terms,
+            provenance: [ProviderId::new("sessions").unwrap()].into(),
         },
-        source_label: None,
-        search_terms,
-        canonical_key: OnceCell::new(),
-    }
+    )
 }
 
 fn remote_entry(config: &SessionEntryConfig) -> Option<Entry> {
     let target = config.remote.clone()?;
     let mut search_terms = vec!["server".into(), "remote".into(), target.clone()];
     search_terms.extend(config.tags.iter().cloned());
-    Some(Entry {
-        source: Source::Server,
-        title: config.name.clone(),
-        subtitle: format!("remote Herdr · {target}"),
-        path: PathBuf::from(format!("remote:{target}")),
-        workspace_id: None,
-        workspace_label: None,
-        agent_target: None,
-        project: None,
-        action: EntryAction::OpenRemote { target },
-        source_label: None,
-        search_terms,
-        canonical_key: OnceCell::new(),
-    })
+    Some(Entry::new(
+        EntryIdentity::provider("configured-remotes", &target, "attach-remote")?,
+        crate::model::EntryData {
+            source: Source::Server,
+            title: config.name.clone(),
+            subtitle: format!("remote Herdr · {target}"),
+            path: None,
+            workspace_id: None,
+            workspace_label: None,
+            agent: None,
+            project: None,
+            action: EntryAction::OpenRemote { target },
+            source_label: None,
+            search_terms,
+            provenance: [ProviderId::new("configured-remotes").unwrap()].into(),
+        },
+    ))
 }
 
-pub(crate) fn attach_session(name: &str) -> Result<(), String> {
-    let status = herdr_attach_command()
-        .args(["session", "attach", name])
-        .status()
-        .map_err(|err| err.to_string())?;
+pub(crate) fn attach_session(route: &crate::herdr::Invocation, name: &str) -> Result<(), String> {
+    attach(route.interactive(true).args(["session", "attach", name]))
+}
 
+pub(crate) fn open_remote(route: &crate::herdr::Invocation, target: &str) -> Result<(), String> {
+    attach(
+        route
+            .interactive(false)
+            .args(["--remote", target, "--handoff"]),
+    )
+}
+
+fn attach(command: &mut Command) -> Result<(), String> {
+    let status = command.status().map_err(|error| error.to_string())?;
     if status.success() {
         Ok(())
     } else {
         Err(format!("herdr exited with {status}"))
     }
-}
-
-pub(crate) fn open_remote(target: &str) -> Result<(), String> {
-    let status = Command::new(herdr_bin())
-        .args(["--remote", target, "--handoff"])
-        .status()
-        .map_err(|err| err.to_string())?;
-
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!("herdr exited with {status}"))
-    }
-}
-
-fn herdr_attach_command() -> Command {
-    let mut command = Command::new(herdr_bin());
-    for key in env::vars()
-        .map(|(key, _)| key)
-        .filter(|key| key.starts_with("HERDR_"))
-    {
-        command.env_remove(key);
-    }
-    command
 }
 
 #[cfg(test)]
@@ -211,6 +215,11 @@ mod tests {
         .unwrap();
 
         assert_eq!(entry.source, Source::Server);
+        assert!(entry.has_provenance(Source::Server));
+        assert_eq!(
+            entry.destination_kind(),
+            crate::model::DestinationKind::Session
+        );
         assert!(entry
             .search_fields()
             .iter()
@@ -219,5 +228,27 @@ mod tests {
             entry.action,
             EntryAction::OpenRemote { ref target } if target == "prod-box"
         ));
+    }
+    #[test]
+    fn session_keys_follow_executed_attach_targets_without_fake_paths() {
+        let mut config = SessionEntryConfig {
+            name: "label".into(),
+            session: Some("work".into()),
+            remote: None,
+            tags: vec![],
+        };
+        let local = manual_session_entry(&config);
+        assert!(local.path.is_none());
+        config.name = "renamed".into();
+        assert_eq!(local.key(), manual_session_entry(&config).key());
+        config.session = Some("other".into());
+        assert_ne!(local.key(), manual_session_entry(&config).key());
+        config.remote = Some("target".into());
+        let remote = remote_entry(&config).unwrap();
+        assert!(remote.path.is_none());
+        config.session = Some("not-used-by-remote-handoff".into());
+        assert_eq!(remote.key(), remote_entry(&config).unwrap().key());
+        config.remote = Some("different-target".into());
+        assert_ne!(remote.key(), remote_entry(&config).unwrap().key());
     }
 }
