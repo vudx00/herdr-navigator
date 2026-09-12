@@ -27,13 +27,6 @@ use crate::{
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum InputMode {
-    Normal,
-    Search,
-    Help,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AgentSort {
     /// Surface agents that need attention first.
     Priority,
@@ -205,9 +198,7 @@ pub(crate) struct App {
     pub(crate) filtered_scores: Vec<i64>,
     pub(crate) selected: usize,
     pub(crate) query: String,
-    pub(crate) input_mode: InputMode,
     pub(crate) source_filter: Option<Source>,
-    pub(crate) preview: bool,
     pub(crate) path_to_workspaces: HashMap<WorkspaceReuseKey, Vec<WorkspaceRef>>,
     pub(crate) previous_workspace_id: Option<EntryIdentity>,
     pub(crate) pinned_entries: HashSet<EntryIdentity>,
@@ -252,7 +243,6 @@ impl App {
         if let Some(diagnostic) = history.diagnostic() {
             eprintln!("Navigator preferences unavailable: {diagnostic}");
         }
-        let preview = config.picker.preview;
         let agent_sort = AgentSort::resolve(&config.picker.agent_sort);
         Self {
             navigation: NavigationContext::new(),
@@ -274,9 +264,7 @@ impl App {
             filtered_scores: vec![],
             selected: 0,
             query: String::new(),
-            input_mode: InputMode::Normal,
             source_filter: None,
-            preview,
             path_to_workspaces: HashMap::new(),
             previous_workspace_id: None,
             pinned_entries: HashSet::new(),
@@ -524,6 +512,7 @@ impl App {
         self.selected = 0;
     }
 
+    #[cfg(test)]
     pub(crate) fn set_filter(&mut self, source: Option<Source>) {
         self.source_filter = if self.source_filter == source {
             None
@@ -954,17 +943,31 @@ impl App {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn open_selected(&mut self, use_directory_template: bool) -> Result<(), String> {
         let slot = if use_directory_template {
             Slot::Template
         } else {
             Slot::Primary
         };
+        let identity = self
+            .selected_entry()
+            .map(|entry| entry.key().clone())
+            .ok_or("nothing selected")?;
+        self.open_intent(&crate::picker::input::ActivationIntent { identity, slot })
+    }
+
+    pub(crate) fn open_intent(
+        &mut self,
+        intent: &crate::picker::input::ActivationIntent,
+    ) -> Result<(), String> {
         let retained = self
             .displayed_actions
             .iter()
-            .find(|token| token.action.slot == slot)
-            .ok_or("action has not been displayed; redraw before activation")?
+            .find(|token| {
+                token.action.identity == intent.identity && token.action.slot == intent.slot
+            })
+            .ok_or("action has not been displayed for this identity and slot; redraw before activation")?
             .clone();
         self.activate_displayed(&retained)
     }
@@ -5104,6 +5107,50 @@ esac
         app.commit_displayed_actions();
         assert!(app.displayed_actions[0].revision > token.revision);
     }
+    #[test]
+    fn merged_intents_require_the_exact_committed_identity_and_slot() {
+        let (mut app, runner) = action_app(&action_lists(None), None);
+        app.entries = vec![herdr_plus::quick_actions_entry()];
+        app.prepare_actions();
+        app.apply_filter();
+        app.commit_displayed_actions();
+        let committed = app.displayed_actions[0].action.identity.clone();
+        let fixture = crate::navigation_test_support::FixtureClient::sample().picker_input();
+        let merged_tab = fixture
+            .destinations
+            .iter()
+            .find(|destination| {
+                destination.entry.destination_kind() == crate::model::DestinationKind::Tab
+            })
+            .unwrap()
+            .entry
+            .key()
+            .clone();
+        for intent in [
+            crate::picker::input::ActivationIntent {
+                identity: merged_tab,
+                slot: Slot::Primary,
+            },
+            crate::picker::input::ActivationIntent {
+                identity: committed.clone(),
+                slot: Slot::Template,
+            },
+        ] {
+            assert!(app
+                .open_intent(&intent)
+                .unwrap_err()
+                .contains("has not been displayed for this identity and slot"));
+            assert_eq!(runner.calls.lock().unwrap().len(), 3);
+        }
+        runner.replies.lock().unwrap().push_back(Ok(vec![]));
+        app.open_intent(&crate::picker::input::ActivationIntent {
+            identity: committed,
+            slot: Slot::Primary,
+        })
+        .unwrap();
+        assert_eq!(runner.calls.lock().unwrap().len(), 4);
+    }
+
     fn preference_dir() -> std::path::PathBuf {
         env::temp_dir().join(format!(
             "navigator-app-history-{}-{}",

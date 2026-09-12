@@ -131,7 +131,8 @@ This is not combined machine navigation or invoking-client focus. Machine rows a
 
 | Key | Action |
 | --- | --- |
-| type | Fuzzy search |
+| type, `Space` | Insert at the query cursor and fuzzy search |
+| `Left` / `Right`, `Home` / `End`, `Backspace` / `Delete` | Edit the query by Unicode scalar boundary |
 | `Enter` | Open selected item normally |
 | `Alt-Enter` | Apply `picker.directory_template` to the selected zoxide/root directory |
 | `Up` / `Down` or `Alt-K` / `Alt-J` | Move selection; the main modal picker overrides Herdr's direct pane-navigation bindings |
@@ -146,10 +147,11 @@ This is not combined machine navigation or invoking-client focus. Machine rows a
 | `Ctrl-R` | Roots |
 | `Ctrl-X` | Confirm, then close the matching open workspace |
 | `Ctrl-B` | Mark or unmark the selected item |
-| `Ctrl-O` | Toggle preview |
-| `Ctrl-U` | Clear query and filter |
+| `Ctrl-O` | Toggle Details |
+| `Ctrl-U` | Clear the query and all filters |
 | `?` | Show active keybindings |
-| `Esc` / `Ctrl-C` | Back or close |
+| `Esc` | Close Help or Details first, leave Search, then close |
+| `Ctrl-C` | Close without activation |
 
 The main `Herdr Navigator` entrypoint is a modal plugin popup, so it receives
 Alt-J and Alt-K before Herdr evaluates global `focus_pane_down` and

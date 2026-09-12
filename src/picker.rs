@@ -2,6 +2,8 @@
 //! No renderer owns this state yet. Rows confer no dispatch authority.
 use std::collections::{HashMap, HashSet};
 
+pub(crate) mod input;
+
 #[cfg(test)]
 mod tests;
 

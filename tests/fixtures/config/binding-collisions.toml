@@ -5,6 +5,9 @@ directory_template = "fixture.toml"
 directory_template_key = "ctrl-p"
 focus_cycle_key = "CTRL+P"
 refresh_key = "^p"
+collapse_key = "ctrl-p"
+expand_key = "ctrl-o"
+technical_details_key = "ctrl-o"
 
 [picker.filter_keys]
 zoxide = "ctrl-p"

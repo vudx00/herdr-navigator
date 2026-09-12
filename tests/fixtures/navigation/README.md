@@ -114,3 +114,11 @@ Direct fields outrank inherited owner/ancestry/path fields, which outrank suppor
 The added matcher, model and config tests cover operator field restrictions, merged provenance and overflow-safe source preference. App tests separate configured Attach from server-category Run using resolved actions. A TUI-module test calls actual App refresh through RecordingRunner, then uses `App::picker_projection` for repeated query/filter/selection changes. It asserts unchanged calls, history and legacy selection, and no displayed-action token commit. This is a data/state test, not new event handling or rendering.
 
 All 241 serial offline tests pass, including the preceding 227. See [N09 verification](../../../tasks/todo.md#n09-verification). Legacy rendering and the merged-unavailable warning remain active; N07, S01, release and independent-review gates remain open.
+
+## N10 fixture-backed input
+
+`picker::input::tests` now feeds the same `FixtureClient` input and production projection into the shared reducer. The reducer receives owned row descriptors, cached machine identities, visible focus regions, action availability, and caller-owned picker state. It never calls App, a collector, history, or transport.
+
+The tests cover scalar-boundary query editing, compressed and visible browse parents, disclosure without activation, independent focus and current selection, F6 traversal, cached Machine and Type menus, menu commit/cancel, Help restoration, provenance shortcuts under all three matchers, vim transitions, full reset, unknown modifiers, structural guidance, unavailable actions, and typed activation intents. App separately rejects a fixture tab intent because no successful legacy draw committed that identity and slot.
+
+These fixtures still grant no client authority. Production creates only a legacy TUI input session, so a retained `presentation = "merged"` request does not activate F6, merged rows, or machine navigation. N11 owns rendering the descriptor's focus, cursor, menus, and technical Details state. F8 remains reserved for N15.

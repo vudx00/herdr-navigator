@@ -5,8 +5,12 @@
 [picker]
 # Rollout requests only. Merged presentation is unavailable; legacy stays active.
 presentation = "legacy" # legacy | merged
-# Reserved and inactive. These do not add commands or help hints yet.
+# Merged input bindings. They remain inactive while the legacy renderer is active.
 focus_cycle_key = "f6"
+collapse_key = "left"
+expand_key = "right"
+technical_details_key = "f7"
+# Reserved for N15. It does not add a Refresh command or help hint.
 refresh_key = "f8"
 # What happens after selecting an entry:
 # - true: focus an already-open workspace for the selected path

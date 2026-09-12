@@ -5,7 +5,7 @@ use std::{
 };
 
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEvent, KeyEventKind},
+    event::{self, Event, KeyEvent, KeyEventKind},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -19,9 +19,13 @@ use ratatui::{
 };
 
 use crate::{
-    app::{App, InputMode},
-    keymap::{keybindings, Command},
+    app::App,
+    keymap::{effective_bindings, Availability as KeyAvailability, Command},
     model::{Entry, EntryAction, Source},
+    picker::input::{
+        self, ActionAvailability, ActivationIntent, Context as InputContext, Descriptor,
+        Effect as InputEffect, Rows, SelectedAction, State as InputState, VimState, VisibleRegions,
+    },
     sources::status_icon_at,
     theme::Theme,
 };
@@ -33,7 +37,7 @@ trait TerminalInput {
     fn cursor(&mut self) -> io::Result<()>;
     fn initialize(&mut self) -> io::Result<()>;
     fn clear(&mut self) -> io::Result<()>;
-    fn draw(&mut self, app: &App, status: Option<&str>) -> io::Result<()>;
+    fn draw(&mut self, app: &App, input: &Descriptor, status: Option<&str>) -> io::Result<()>;
     fn poll(&mut self, timeout: Duration) -> io::Result<bool>;
     fn read(&mut self) -> io::Result<Event>;
     fn confirm(&mut self, prompt: &str) -> io::Result<bool>;
@@ -77,9 +81,9 @@ impl TerminalInput for Console {
     fn clear(&mut self) -> io::Result<()> {
         self.terminal()?.clear()
     }
-    fn draw(&mut self, app: &App, status: Option<&str>) -> io::Result<()> {
+    fn draw(&mut self, app: &App, input: &Descriptor, status: Option<&str>) -> io::Result<()> {
         self.terminal()?
-            .draw(|frame| draw_with_status(frame, app, status))?;
+            .draw(|frame| draw_with_status(frame, app, input, status))?;
         Ok(())
     }
     fn poll(&mut self, timeout: Duration) -> io::Result<bool> {
@@ -154,6 +158,26 @@ fn run_terminal(
     guard.finish(result)
 }
 
+struct TuiInputSession {
+    state: InputState,
+    // The production renderer is still legacy. N11 may populate this only after
+    // merged rendering and client capability gates exist.
+    merged: Option<(crate::picker::PickerInput, crate::picker::PickerState)>,
+}
+
+impl TuiInputSession {
+    fn legacy(app: &App) -> Self {
+        Self {
+            state: InputState::legacy(&app.config.picker, &app.query),
+            merged: None,
+        }
+    }
+
+    fn descriptor(&self) -> Descriptor {
+        self.state.descriptor()
+    }
+}
+
 fn action_loop(
     app: &mut App,
     persist: bool,
@@ -161,6 +185,7 @@ fn action_loop(
     terminal: &mut TerminalGuard<'_, impl TerminalInput>,
 ) -> io::Result<()> {
     let mut status = None;
+    let mut input_session = TuiInputSession::legacy(app);
     loop {
         if let Some(result) = update_check.as_ref().map(Receiver::try_recv) {
             match result {
@@ -172,7 +197,10 @@ fn action_loop(
                 Err(TryRecvError::Empty) => {}
             }
         }
-        terminal.terminal.draw(app, status.as_deref())?;
+        let input_descriptor = input_session.descriptor();
+        terminal
+            .terminal
+            .draw(app, &input_descriptor, status.as_deref())?;
         app.commit_displayed_actions();
         let animate = app.animate_spinner;
         if (animate || update_check.is_some())
@@ -184,83 +212,57 @@ fn action_loop(
             continue;
         }
         match terminal.terminal.read()? {
-            Event::Key(key) if key.kind == KeyEventKind::Press => match handle_key(app, key) {
-                Action::Continue => {}
-                Action::Quit => return Ok(()),
-                action @ (Action::Open | Action::OpenTemplate) => {
-                    let template = matches!(action, Action::OpenTemplate);
-                    let suspended = app.displayed_action_needs_terminal(template);
-                    if suspended {
-                        terminal.restore()?;
-                    }
-                    let outcome = app.open_selected(template);
-                    if suspended {
-                        if let Err(resume) = terminal.resume() {
-                            return Err(match outcome {
-                                Err(error) => io::Error::other(format!(
-                                    "{error}; terminal resume failed: {resume}"
-                                )),
-                                Ok(()) => resume,
-                            });
+            Event::Key(key) if key.kind == KeyEventKind::Press => {
+                match handle_key(app, &mut input_session, key) {
+                    Action::Continue => {}
+                    Action::Status(message) => status = Some(message),
+                    Action::Quit => return Ok(()),
+                    Action::Open(intent) => {
+                        let template = intent.slot == crate::actions::Slot::Template;
+                        let suspended = app.displayed_action_needs_terminal(template);
+                        if suspended {
+                            terminal.restore()?;
                         }
-                    }
-                    match outcome {
-                        Ok(()) if !persist => return Ok(()),
-                        Ok(()) => {
-                            status = None;
-                            app.refresh();
-                        }
-                        Err(error) => status = Some(format!("Open failed: {error}")),
-                    }
-                }
-                Action::Update => {
-                    terminal.restore()?;
-                    if let Some(version) = app.update_available.clone() {
-                        if terminal
-                            .terminal
-                            .confirm(&format!("Update Herdr Navigator to v{version}?"))?
-                        {
-                            // Explicit F5 confirmation is the only install path.
-                            match crate::update::install(&version) {
-                                Ok(()) => eprintln!("Updated Herdr Navigator to v{version}."),
-                                Err(error) => eprintln!("Update failed: {error}"),
+                        let outcome = app.open_intent(&intent);
+                        if suspended {
+                            if let Err(resume) = terminal.resume() {
+                                return Err(match outcome {
+                                    Err(error) => io::Error::other(format!(
+                                        "{error}; terminal resume failed: {resume}"
+                                    )),
+                                    Ok(()) => resume,
+                                });
                             }
-                            return Ok(());
+                        }
+                        match outcome {
+                            Ok(()) if !persist => return Ok(()),
+                            Ok(()) => {
+                                status = None;
+                                app.refresh();
+                            }
+                            Err(error) => status = Some(format!("Open failed: {error}")),
                         }
                     }
-                    terminal.resume()?;
-                }
-                Action::Mark => {
-                    if let Err(error) = app.toggle_selected_pin() {
-                        let message = format!("Mark failed: {error}");
-                        app.navigation
-                            .server()
-                            .notify(&message, false, &app.config.notifications);
-                        status = Some(message);
-                    }
-                }
-                Action::CloseWorkspace => {
-                    if let Err(error) = app.retain_close_action() {
-                        status = Some(format!("Close failed: {error}"));
-                        continue;
-                    }
-                    let confirmed = if app.config.picker.confirm_close_workspace {
-                        let title = app
-                            .close_description()
-                            .unwrap_or("selected workspace")
-                            .to_string();
+                    Action::Update => {
                         terminal.restore()?;
-                        let confirmed = terminal.terminal.confirm(&format!(
-                            "Close workspace {title:?}? Running processes may stop."
-                        ))?;
+                        if let Some(version) = app.update_available.clone() {
+                            if terminal
+                                .terminal
+                                .confirm(&format!("Update Herdr Navigator to v{version}?"))?
+                            {
+                                // Explicit F5 confirmation is the only install path.
+                                match crate::update::install(&version) {
+                                    Ok(()) => eprintln!("Updated Herdr Navigator to v{version}."),
+                                    Err(error) => eprintln!("Update failed: {error}"),
+                                }
+                                return Ok(());
+                            }
+                        }
                         terminal.resume()?;
-                        confirmed
-                    } else {
-                        true
-                    };
-                    if confirmed {
-                        if let Err(error) = app.close_selected_workspace() {
-                            let message = format!("Close failed: {error}");
+                    }
+                    Action::Mark => {
+                        if let Err(error) = app.toggle_selected_pin() {
+                            let message = format!("Mark failed: {error}");
                             app.navigation.server().notify(
                                 &message,
                                 false,
@@ -269,8 +271,39 @@ fn action_loop(
                             status = Some(message);
                         }
                     }
+                    Action::CloseWorkspace => {
+                        if let Err(error) = app.retain_close_action() {
+                            status = Some(format!("Close failed: {error}"));
+                            continue;
+                        }
+                        let confirmed = if app.config.picker.confirm_close_workspace {
+                            let title = app
+                                .close_description()
+                                .unwrap_or("selected workspace")
+                                .to_string();
+                            terminal.restore()?;
+                            let confirmed = terminal.terminal.confirm(&format!(
+                                "Close workspace {title:?}? Running processes may stop."
+                            ))?;
+                            terminal.resume()?;
+                            confirmed
+                        } else {
+                            true
+                        };
+                        if confirmed {
+                            if let Err(error) = app.close_selected_workspace() {
+                                let message = format!("Close failed: {error}");
+                                app.navigation.server().notify(
+                                    &message,
+                                    false,
+                                    &app.config.notifications,
+                                );
+                                status = Some(message);
+                            }
+                        }
+                    }
                 }
-            },
+            }
             _ => {}
         }
     }
@@ -288,127 +321,98 @@ fn confirm(prompt: &str) -> io::Result<bool> {
 
 enum Action {
     Continue,
+    Status(String),
     Quit,
-    Open,
-    OpenTemplate,
+    Open(ActivationIntent),
     Update,
     CloseWorkspace,
     Mark,
 }
 
-fn handle_key(app: &mut App, key: KeyEvent) -> Action {
-    let command = keybindings(app)
-        .into_iter()
-        .find(|binding| binding.matches(app, key))
-        .map(|binding| binding.command);
-
-    if app.input_mode == InputMode::Help {
-        if matches!(command, Some(Command::Back | Command::ToggleHelp)) {
-            app.input_mode = InputMode::Normal;
+fn handle_key(app: &mut App, session: &mut TuiInputSession, key: KeyEvent) -> Action {
+    debug_assert!(session.merged.is_none());
+    let selected = app.selected_entry().map(|entry| {
+        let resolved = app.resolved_action(entry, crate::actions::Slot::Primary);
+        SelectedAction {
+            identity: entry.key().clone(),
+            unavailable: resolved.unavailable,
         }
-        return Action::Continue;
+    });
+    let rows = match &selected {
+        Some(action) => Rows {
+            rows: vec![input::RowView {
+                id: crate::picker::RowId::Destination(action.identity.clone()),
+                ancestors: Vec::new(),
+                disclosure: false,
+                expanded: false,
+                action: Some(action.clone()),
+            }],
+            selection: Some(crate::picker::RowId::Destination(action.identity.clone())),
+            flat: true,
+        },
+        None => Rows::default(),
+    };
+    let actions = ActionAvailability {
+        selected,
+        template: app.directory_template_for_selected().is_some(),
+        close: app.can_close_selected(),
+        update: app.update_available.is_some(),
+        reject_unavailable: false,
+    };
+    let config = app.config.picker.clone();
+    let visible = VisibleRegions::legacy(session.state.details.visible);
+    let effects = input::reduce(
+        &mut session.state,
+        &mut app.query,
+        None,
+        key,
+        InputContext {
+            config: &config,
+            visible,
+            rows: &rows,
+            actions,
+            legacy_filter: app.source_filter,
+            machine_options: &[],
+        },
+    );
+    let mut action = Action::Continue;
+    let mut filter_changed = false;
+    for effect in effects {
+        match effect {
+            InputEffect::Quit => action = Action::Quit,
+            InputEffect::QueryChanged => filter_changed = true,
+            InputEffect::MoveLegacy(delta) if delta < 0 => app.prev(),
+            InputEffect::MoveLegacy(_) => app.next(),
+            InputEffect::SetLegacyFilter(filter) => {
+                app.source_filter = filter;
+                app.selected = 0;
+                filter_changed = true;
+            }
+            InputEffect::CycleLegacyFilter => app.cycle_filter(),
+            InputEffect::Activate(intent) | InputEffect::OpenTemplate(intent) => {
+                action = Action::Open(intent)
+            }
+            InputEffect::Rejected(message) | InputEffect::Guidance(message) => {
+                action = Action::Status(message)
+            }
+            InputEffect::ToggleMark => action = Action::Mark,
+            InputEffect::CloseWorkspace => action = Action::CloseWorkspace,
+            InputEffect::Update => action = Action::Update,
+        }
     }
-
-    if let Some(command) = command {
-        return execute_command(app, command, key);
-    }
-
-    if app.config.picker.vim_mode && app.input_mode == InputMode::Normal {
-        return Action::Continue;
-    }
-    if key.code == KeyCode::Char('x')
-        && key
-            .modifiers
-            .contains(crossterm::event::KeyModifiers::CONTROL)
-    {
-        return Action::Continue;
-    }
-
-    if let KeyCode::Char(c) = key.code {
-        app.query.push(c);
+    if filter_changed {
         app.apply_filter();
     }
-    Action::Continue
-}
-
-fn execute_command(app: &mut App, command: Command, key: KeyEvent) -> Action {
-    match command {
-        Command::Back => {
-            if key.code == KeyCode::Esc && app.input_mode == InputMode::Search {
-                app.input_mode = InputMode::Normal;
-                Action::Continue
-            } else {
-                Action::Quit
-            }
-        }
-        Command::Open => Action::Open,
-        Command::OpenTemplate => Action::OpenTemplate,
-        Command::Update => Action::Update,
-        Command::MoveUp => {
-            app.prev();
-            Action::Continue
-        }
-        Command::MoveDown => {
-            app.next();
-            Action::Continue
-        }
-        Command::StartSearch => {
-            app.query.clear();
-            app.apply_filter();
-            app.input_mode = InputMode::Search;
-            Action::Continue
-        }
-        Command::CycleFilter => {
-            app.cycle_filter();
-            Action::Continue
-        }
-        Command::DeleteChar => {
-            app.query.pop();
-            app.apply_filter();
-            Action::Continue
-        }
-        Command::Clear => {
-            app.query.clear();
-            app.set_filter(None);
-            app.input_mode = InputMode::Normal;
-            app.apply_filter();
-            Action::Continue
-        }
-        Command::CloseWorkspace => Action::CloseWorkspace,
-        Command::ToggleMark => Action::Mark,
-        Command::TogglePreview => {
-            app.preview = !app.preview;
-            Action::Continue
-        }
-        Command::ToggleHelp => {
-            app.input_mode = InputMode::Help;
-            Action::Continue
-        }
-        Command::Filter(source) => {
-            if !key
-                .modifiers
-                .contains(crossterm::event::KeyModifiers::CONTROL)
-            {
-                app.query.clear();
-                app.input_mode = if app.config.picker.vim_filter_search {
-                    InputMode::Search
-                } else {
-                    InputMode::Normal
-                };
-            }
-            app.set_filter(Some(source));
-            app.apply_filter();
-            Action::Continue
-        }
-    }
+    action
 }
 
 #[cfg(test)]
 fn draw(f: &mut Frame, app: &App) {
-    draw_with_status(f, app, None);
+    let input = InputState::legacy(&app.config.picker, &app.query).descriptor();
+    draw_with_status(f, app, &input, None);
 }
 
-fn draw_with_status(f: &mut Frame, app: &App, status: Option<&str>) {
+fn draw_with_status(f: &mut Frame, app: &App, input: &Descriptor, status: Option<&str>) {
     let area = f.area();
     f.render_widget(Clear, area);
     // Herdr already frames and titles the plugin pane; a second border here
@@ -480,7 +484,7 @@ fn draw_with_status(f: &mut Frame, app: &App, status: Option<&str>) {
     let search = Paragraph::new(lines).block(query_block);
     f.render_widget(search, rows[0]);
 
-    let body = if app.preview {
+    let body = if input.details.visible {
         Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(48), Constraint::Percentage(52)])
@@ -493,7 +497,7 @@ fn draw_with_status(f: &mut Frame, app: &App, status: Option<&str>) {
     };
 
     draw_list(f, app, body[0]);
-    if app.preview {
+    if input.details.visible {
         draw_preview(f, app, body[1]);
     }
 
@@ -505,17 +509,41 @@ fn draw_with_status(f: &mut Frame, app: &App, status: Option<&str>) {
             rows[2],
         );
     }
-    draw_key_hints(f, app, rows[3]);
-    if app.input_mode == InputMode::Help {
-        draw_keybindings_help(f, app, area);
+    draw_key_hints(f, app, input, rows[3]);
+    if input.help {
+        draw_keybindings_help(f, app, input, area);
     }
 }
 
-fn draw_key_hints(f: &mut Frame, app: &App, area: Rect) {
+fn key_availability(app: &App) -> KeyAvailability {
+    KeyAvailability {
+        template: app.directory_template_for_selected().is_some(),
+        update: app.update_available.is_some(),
+        close: app.can_close_selected(),
+    }
+}
+
+fn binding_active(command: &Command, app: &App, input: &Descriptor) -> bool {
+    match command {
+        Command::StartSearch => input.vim == VimState::Search,
+        Command::CycleFilter => app.source_filter.is_some(),
+        Command::ToggleMark => app
+            .selected_entry()
+            .is_some_and(|entry| app.is_pinned(entry)),
+        Command::ToggleDetails => input.details.visible,
+        Command::ToggleHelp => input.help,
+        Command::Filter(source) => app.source_filter == Some(*source),
+        Command::TechnicalDetails => input.details.technical,
+        _ => false,
+    }
+}
+
+fn draw_key_hints(f: &mut Frame, app: &App, input: &Descriptor, area: Rect) {
     let mut command_spans = Vec::new();
     let mut filter_spans = Vec::new();
-    for binding in keybindings(app) {
-        let Some((key, label)) = binding.compact_hint(app) else {
+    let availability = key_availability(app);
+    for binding in effective_bindings(&app.config.picker, input.key_context, availability) {
+        let Some((key, label)) = binding.compact_hint() else {
             continue;
         };
         if key.is_empty() {
@@ -526,7 +554,7 @@ fn draw_key_hints(f: &mut Frame, app: &App, area: Rect) {
         } else {
             &mut command_spans
         };
-        let active = binding.is_active(app);
+        let active = binding_active(&binding.command, app, input);
         let key_style = if active {
             Style::default()
                 .fg(app.theme.panel_bg)
@@ -539,7 +567,7 @@ fn draw_key_hints(f: &mut Frame, app: &App, area: Rect) {
         };
         spans.push(Span::styled(format!(" {key} "), key_style));
         let label = match binding.command {
-            Command::Open => app
+            Command::Open if binding.label == "open selected" => app
                 .selected_entry()
                 .map(|entry| {
                     app.resolved_action(entry, crate::actions::Slot::Primary)
@@ -574,59 +602,152 @@ fn draw_key_hints(f: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-fn draw_keybindings_help(f: &mut Frame, app: &App, area: Rect) {
-    let bindings = keybindings(app);
+fn help_text_width(text: &str) -> usize {
+    Span::raw(text).width()
+}
+
+fn wrap_help_description(description: &str, width: usize) -> Vec<String> {
+    if description.is_empty() || width == 0 {
+        return vec![description.to_string()];
+    }
+
     let mut lines = Vec::new();
-    for group in ["Navigation", "Actions", "View", "Filters"] {
-        let start = lines.len();
-        lines.push(Line::styled(
-            format!(" {group}"),
-            Style::default()
-                .fg(app.theme.accent)
-                .add_modifier(Modifier::BOLD),
-        ));
-        for binding in bindings.iter().filter(|binding| binding.group == group) {
-            let key = binding.key_label(app);
-            if key.is_empty() {
+    let mut line = String::new();
+    let mut line_width = 0;
+    for word in description.split_whitespace() {
+        let word_width = help_text_width(word);
+        if word_width <= width {
+            let separator = usize::from(!line.is_empty());
+            if line_width + separator + word_width <= width {
+                if separator == 1 {
+                    line.push(' ');
+                }
+                line.push_str(word);
+                line_width += separator + word_width;
                 continue;
             }
-            let active = binding.is_active(app);
-            let key_style = if active {
-                Style::default()
-                    .fg(app.theme.panel_bg)
-                    .bg(app.theme.accent)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(app.theme.accent)
-            };
-            lines.push(Line::from(vec![
-                Span::raw("   "),
-                Span::styled(format!("{key:<12}"), key_style),
-                Span::styled(&binding.label, Style::default().fg(app.theme.text)),
-            ]));
+            lines.push(std::mem::take(&mut line));
+            line.push_str(word);
+            line_width = word_width;
+            continue;
         }
-        if lines.len() == start + 1 {
-            lines.pop();
-        } else {
-            lines.push(Line::default());
+
+        if !line.is_empty() {
+            lines.push(std::mem::take(&mut line));
+            line_width = 0;
+        }
+        for character in word.chars() {
+            let character_width = help_text_width(character.encode_utf8(&mut [0; 4]));
+            if line_width > 0 && line_width + character_width > width {
+                lines.push(std::mem::take(&mut line));
+                line_width = 0;
+            }
+            line.push(character);
+            line_width += character_width;
         }
     }
-    lines.pop();
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines
+}
 
-    let height = (lines.len() as u16 + 2).min(area.height.saturating_sub(2).max(1));
-    let popup = area.centered(Constraint::Percentage(72), Constraint::Length(height));
+fn draw_keybindings_help(f: &mut Frame, app: &App, input: &Descriptor, area: Rect) {
+    let bindings = effective_bindings(&app.config.picker, input.key_context, key_availability(app));
+    let block = Block::default()
+        .title(" Keybindings ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(app.theme.accent));
+    let width_probe = area.centered(Constraint::Percentage(94), Constraint::Length(1));
+    let probe_columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(block.inner(width_probe));
+    let build_lines = |groups: &[&str], column_width: u16| {
+        let column_bindings: Vec<_> = bindings
+            .iter()
+            .filter(|binding| groups.contains(&binding.group))
+            .collect();
+        let indent = "  ";
+        let separator = " ";
+        let fixed_width = help_text_width(indent) + help_text_width(separator);
+        let key_width = column_bindings
+            .iter()
+            .map(|binding| help_text_width(&binding.key_label()))
+            .max()
+            .unwrap_or_default()
+            .min(usize::from(column_width).saturating_sub(fixed_width));
+        let description_width = usize::from(column_width).saturating_sub(fixed_width + key_width);
+        let continuation = " ".repeat(fixed_width + key_width);
+        let mut lines = Vec::new();
+        for group in groups {
+            let start = lines.len();
+            lines.push(Line::styled(
+                format!(" {group}"),
+                Style::default()
+                    .fg(app.theme.accent)
+                    .add_modifier(Modifier::BOLD),
+            ));
+            for binding in column_bindings
+                .iter()
+                .filter(|binding| binding.group == *group)
+            {
+                let key = binding.key_label();
+                let active = binding_active(&binding.command, app, input);
+                let key_style = if active {
+                    Style::default()
+                        .fg(app.theme.panel_bg)
+                        .bg(app.theme.accent)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(app.theme.accent)
+                };
+                let mut descriptions =
+                    wrap_help_description(&binding.label, description_width).into_iter();
+                let first = descriptions.next().unwrap_or_default();
+                let padding = " ".repeat(key_width.saturating_sub(help_text_width(&key)));
+                lines.push(Line::from(vec![
+                    Span::raw(indent),
+                    Span::styled(format!("{key}{padding}"), key_style),
+                    Span::raw(separator),
+                    Span::styled(first, Style::default().fg(app.theme.text)),
+                ]));
+                lines.extend(descriptions.map(|description| {
+                    Line::from(vec![
+                        Span::raw(continuation.clone()),
+                        Span::styled(description, Style::default().fg(app.theme.text)),
+                    ])
+                }));
+            }
+            if lines.len() == start + 1 {
+                lines.pop();
+            } else {
+                lines.push(Line::default());
+            }
+        }
+        lines.pop();
+        lines
+    };
+    let left = build_lines(&["Navigation", "Editing"], probe_columns[0].width);
+    let right = build_lines(&["Actions", "View", "Filters"], probe_columns[1].width);
+    let height = (left.len().max(right.len()) as u16 + 2).min(area.height.saturating_sub(2).max(1));
+    let popup = area.centered(Constraint::Percentage(94), Constraint::Length(height));
+    let content = block.inner(popup);
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(content);
     f.render_widget(Clear, popup);
-    f.render_widget(
-        Paragraph::new(Text::from(lines))
-            .style(Style::default().bg(app.theme.panel_bg))
-            .block(
-                Block::default()
-                    .title(" Keybindings ")
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(app.theme.accent)),
-            ),
-        popup,
-    );
+    f.render_widget(block, popup);
+    for (lines, column) in [(left, columns[0]), (right, columns[1])] {
+        f.render_widget(
+            Paragraph::new(Text::from(lines)).style(Style::default().bg(app.theme.panel_bg)),
+            column,
+        );
+    }
 }
 
 /// Whether any row needs the spinner animated. Entries only change on refresh,
@@ -1137,7 +1258,7 @@ mod tests {
     };
     use std::path::PathBuf;
 
-    use crossterm::event::KeyModifiers;
+    use crossterm::event::{KeyCode, KeyModifiers};
     use ratatui::backend::TestBackend;
 
     use super::*;
@@ -1191,6 +1312,41 @@ mod tests {
             .join("\n")
     }
 
+    fn set_merged_key(config: &mut Config, command: &Command, value: &str) {
+        match command {
+            Command::FocusCycle => config.picker.focus_cycle_key = value.into(),
+            Command::Collapse => config.picker.collapse_key = value.into(),
+            Command::Expand => config.picker.expand_key = value.into(),
+            Command::TechnicalDetails => config.picker.technical_details_key = value.into(),
+            _ => panic!("not a merged command"),
+        }
+    }
+
+    fn merged_help_text(app: &mut App, focus: crate::keymap::Focus, menu: bool) -> String {
+        let mut input = TuiInputSession {
+            state: InputState::merged(&app.config.picker, &app.query),
+            merged: None,
+        };
+        input.state.focus = focus;
+        if menu {
+            assert!(matches!(
+                handle_key(app, &mut input, key(KeyCode::Enter)),
+                Action::Continue
+            ));
+            assert!(input.state.menu.is_some());
+        }
+        assert!(matches!(
+            handle_key(app, &mut input, key(KeyCode::Char('?'))),
+            Action::Continue
+        ));
+        assert!(input.state.help_visible());
+        let mut terminal = Terminal::new(TestBackend::new(160, 32)).unwrap();
+        terminal
+            .draw(|frame| draw_with_status(frame, app, &input.descriptor(), None))
+            .unwrap();
+        buffer_text(&terminal)
+    }
+
     struct TestState(PathBuf);
 
     impl TestState {
@@ -1236,19 +1392,26 @@ mod tests {
         title: Option<String>,
         query: String,
         filter: Option<Source>,
-        preview: bool,
-        mode: InputMode,
+        details: bool,
+        vim: VimState,
+        help: bool,
     }
     impl ViewState {
-        fn capture(app: &App) -> Self {
+        fn capture(app: &App, input: &Descriptor) -> Self {
             Self {
                 identity: app.selected_entry().map(|e| e.key().clone()),
                 title: app.selected_entry().map(|e| e.title.clone()),
                 query: app.query.clone(),
                 filter: app.source_filter,
-                preview: app.preview,
-                mode: app.input_mode,
+                details: input.details.visible,
+                vim: input.vim,
+                help: input.help,
             }
+        }
+
+        fn capture_default(app: &App) -> Self {
+            let input = InputState::legacy(&app.config.picker, &app.query).descriptor();
+            Self::capture(app, &input)
         }
     }
 
@@ -1303,13 +1466,13 @@ mod tests {
         fn clear(&mut self) -> io::Result<()> {
             self.step("clear")
         }
-        fn draw(&mut self, app: &App, status: Option<&str>) -> io::Result<()> {
+        fn draw(&mut self, app: &App, input: &Descriptor, status: Option<&str>) -> io::Result<()> {
             self.step("draw")?;
             self.terminal
-                .draw(|frame| draw_with_status(frame, app, status))
+                .draw(|frame| draw_with_status(frame, app, input, status))
                 .unwrap();
             self.frames
-                .push((ViewState::capture(app), buffer_text(&self.terminal)));
+                .push((ViewState::capture(app, input), buffer_text(&self.terminal)));
             Ok(())
         }
         fn poll(&mut self, _: Duration) -> io::Result<bool> {
@@ -1356,11 +1519,20 @@ mod tests {
         loop_app_with_invocation(state, route)
     }
 
+    fn fixture_invocation(state: &TestState) -> crate::herdr::Invocation {
+        crate::herdr::Invocation::for_test(
+            state.0.join("herdr-fixture"),
+            state.0.clone(),
+            Vec::new(),
+        )
+    }
+
     fn loop_app_with_invocation(
         state: &TestState,
         route: crate::herdr::Invocation,
     ) -> (App, std::sync::Arc<crate::herdr::RecordingRunner>) {
         let mut config = Config::default();
+        config.picker.preview = false;
         config.notifications.enabled = false;
         config.sources.herdr_plus_projects = false;
         config.sources.herdr_plus_quick_actions = false;
@@ -1421,9 +1593,8 @@ mod tests {
                 app.query = "w43".into();
                 app.set_filter(Some(app.entries[0].source));
                 app.apply_filter();
-                app.preview = persist;
-                app.input_mode = InputMode::Search;
-                let before = ViewState::capture(&app);
+                app.config.picker.preview = persist;
+                let before = ViewState::capture_default(&app);
                 let history = state.bytes();
                 queue_lists(&runner, &lists, 3);
                 app.config.notifications.enabled = true;
@@ -1440,7 +1611,7 @@ mod tests {
                     assert!(start.elapsed() >= crate::herdr::Limits::default().deadline);
                     assert!(start.elapsed() < Duration::from_secs(5));
                 }
-                assert_eq!(terminal.frames.len(), 4, "{case}");
+                assert_eq!(terminal.frames.len(), if persist { 4 } else { 3 }, "{case}");
                 for (view, text) in terminal.frames.iter().take(3) {
                     assert_eq!(view, &before, "{case}");
                     assert!(text.contains("Server scope: owner unknown"));
@@ -1504,7 +1675,7 @@ mod tests {
                 let mut lists = crate::navigation_test_support::ordinary_lists();
                 queue_lists(&runner, &lists, 4);
                 app.refresh();
-                let before = ViewState::capture(&app);
+                let before = ViewState::capture_default(&app);
                 let history = state.bytes();
                 match case {
                     "removed" => lists[1]["result"]["panes"] = serde_json::json!([]),
@@ -1550,8 +1721,8 @@ mod tests {
             app.refresh();
             app.query = "w43".into();
             app.apply_filter();
-            app.preview = false;
-            let before = ViewState::capture(&app);
+            app.config.picker.preview = false;
+            let before = ViewState::capture_default(&app);
             queue_lists(&runner, &lists, 3);
             if persist {
                 queue_lists(&runner, &lists, 4);
@@ -1559,7 +1730,7 @@ mod tests {
             let mut terminal = FakeTerminal::new([press(KeyCode::Enter), press(KeyCode::Esc)]);
             run_terminal(&mut app, persist, None, &mut terminal).unwrap();
             assert_eq!(terminal.frames.len(), if persist { 2 } else { 1 });
-            assert_eq!(ViewState::capture(&app), before);
+            assert_eq!(ViewState::capture_default(&app), before);
             assert_eq!(
                 runner.calls.lock().unwrap().len(),
                 if persist { 11 } else { 7 }
@@ -1727,7 +1898,7 @@ mod tests {
             app.entries = vec![row];
             app.prepare_actions();
             app.apply_filter();
-            let before = ViewState::capture(&app);
+            let before = ViewState::capture_default(&app);
             let history = state.bytes();
             lists[0]["result"]["workspaces"] = serde_json::json!([]);
             lists[1]["result"]["panes"] = serde_json::json!([]);
@@ -1872,7 +2043,7 @@ mod tests {
             app.entries = vec![row];
             app.query = "test".into();
             app.set_filter(Some(Source::Session));
-            app.preview = persist;
+            app.config.picker.preview = persist;
             app.prepare_actions();
             app.apply_filter();
             assert!(app
@@ -1880,16 +2051,25 @@ mod tests {
                 .unwrap_err()
                 .contains("has not been displayed"));
             assert!(!self.calls.exists());
-            let before = ViewState::capture(&app);
-            let mut terminal = FakeTerminal::new([
+            let before = ViewState::capture_default(&app);
+            let mut events = vec![
                 press(KeyCode::Enter),
                 Event::Resize(160, 24),
                 press(KeyCode::Esc),
-            ]);
+            ];
+            if persist {
+                events.push(press(KeyCode::Esc));
+            }
+            let mut terminal = FakeTerminal::new(events);
             run_terminal(&mut app, persist, None, &mut terminal).unwrap();
-            assert_eq!(terminal.frames.len(), 3);
-            for (view, _) in &terminal.frames {
+            assert_eq!(terminal.frames.len(), if persist { 4 } else { 3 });
+            for (view, _) in terminal.frames.iter().take(3) {
                 assert_eq!(view, &before);
+            }
+            if persist {
+                assert!(!terminal.frames[3].0.details);
+                assert_eq!(terminal.frames[3].0.identity, before.identity);
+                assert_eq!(terminal.frames[3].0.query, before.query);
             }
             assert!(
                 terminal.frames[1]
@@ -2023,7 +2203,7 @@ mod tests {
                             .is_some_and(|target| target.identity().id() == id)
                     })
                     .unwrap();
-                let before = ViewState::capture(&app);
+                let before = ViewState::capture_default(&app);
                 let filtered = app.filtered.clone();
                 let history = state.bytes();
                 let mut terminal = FakeTerminal::new([
@@ -2038,7 +2218,7 @@ mod tests {
                     .frames
                     .iter()
                     .all(|(view, text)| { view == &before && !text.contains("Close failed") }));
-                assert_eq!(ViewState::capture(&app), before);
+                assert_eq!(ViewState::capture_default(&app), before);
                 assert_eq!(app.filtered, filtered);
                 assert!(app.close_description().is_none());
                 assert_eq!(state.bytes(), history);
@@ -2079,7 +2259,7 @@ mod tests {
                 3,
             );
             app.refresh();
-            let before = ViewState::capture(&app);
+            let before = ViewState::capture_default(&app);
             let mut terminal = FakeTerminal::new([
                 Event::Key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL)),
                 press(KeyCode::Esc),
@@ -2092,7 +2272,7 @@ mod tests {
             assert!(terminal
                 .operations
                 .ends_with(&["raw-off", "alt-off", "cursor"]));
-            assert_eq!(ViewState::capture(&app), before);
+            assert_eq!(ViewState::capture_default(&app), before);
             assert_eq!(runner.calls.lock().unwrap().len(), 3);
         }
     }
@@ -2138,6 +2318,241 @@ mod tests {
         );
     }
 
+    #[derive(Debug, PartialEq, Eq)]
+    struct ModifierAdapterSnapshot {
+        input: String,
+        selected: usize,
+        selected_identity: Option<EntryIdentity>,
+        entry_identities: Vec<EntryIdentity>,
+        filtered: Vec<usize>,
+        filtered_scores: Vec<i64>,
+        query: String,
+        filter: Option<Source>,
+        pinned: std::collections::HashSet<EntryIdentity>,
+        update_available: Option<String>,
+        history: std::collections::BTreeMap<String, Vec<u8>>,
+        runner_calls: usize,
+    }
+
+    fn modifier_adapter_snapshot(
+        app: &App,
+        input: &TuiInputSession,
+        state: &TestState,
+        runner: &crate::herdr::RecordingRunner,
+    ) -> ModifierAdapterSnapshot {
+        ModifierAdapterSnapshot {
+            input: format!("{:?}", input.state),
+            selected: app.selected,
+            selected_identity: app.selected_entry().map(|entry| entry.key().clone()),
+            entry_identities: app
+                .entries
+                .iter()
+                .map(|entry| entry.key().clone())
+                .collect(),
+            filtered: app.filtered.clone(),
+            filtered_scores: app.filtered_scores.clone(),
+            query: app.query.clone(),
+            filter: app.source_filter,
+            pinned: app.pinned_entries.clone(),
+            update_available: app.update_available.clone(),
+            history: state.bytes(),
+            runner_calls: runner.calls.lock().unwrap().len(),
+        }
+    }
+
+    #[test]
+    fn n10_modifier_legacy_adapter_rejects_unsupported_combinations_without_side_effects() {
+        let state = TestState::new();
+        let (mut app, runner) = loop_app_with_invocation(&state, fixture_invocation(&state));
+        app.config.picker.directory_template = Some("default.toml".into());
+        app.config.picker.directory_template_key = "ctrl-g".into();
+        app.entries = vec![
+            entry(Source::Zoxide, "alpha"),
+            entry(Source::Zoxide, "bravo"),
+        ];
+        app.query = "aé🙂z".into();
+        app.update_available = Some("fixture-update".into());
+        app.apply_filter();
+        let mut input = TuiInputSession::legacy(&app);
+        assert!(matches!(
+            handle_key(&mut app, &mut input, key(KeyCode::Left)),
+            Action::Continue
+        ));
+
+        let ctrl_alt = KeyModifiers::CONTROL | KeyModifiers::ALT;
+        let ctrl_shift = KeyModifiers::CONTROL | KeyModifiers::SHIFT;
+        let alt_ctrl_shift = KeyModifiers::ALT | KeyModifiers::CONTROL | KeyModifiers::SHIFT;
+        for event in [
+            KeyEvent::new(KeyCode::Char('c'), ctrl_alt),
+            KeyEvent::new(KeyCode::Char('c'), ctrl_shift),
+            KeyEvent::new(KeyCode::Char('g'), ctrl_alt),
+            KeyEvent::new(KeyCode::Char('g'), ctrl_shift),
+            KeyEvent::new(KeyCode::Char('b'), ctrl_alt),
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT | KeyModifiers::SHIFT),
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT | KeyModifiers::CONTROL),
+            KeyEvent::new(KeyCode::Tab, KeyModifiers::SHIFT),
+            KeyEvent::new(KeyCode::Left, alt_ctrl_shift),
+            KeyEvent::new(KeyCode::Right, alt_ctrl_shift),
+            KeyEvent::new(KeyCode::Home, alt_ctrl_shift),
+            KeyEvent::new(KeyCode::End, alt_ctrl_shift),
+            KeyEvent::new(KeyCode::Backspace, alt_ctrl_shift),
+            KeyEvent::new(KeyCode::Delete, alt_ctrl_shift),
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::ALT),
+            KeyEvent::new(KeyCode::F(5), KeyModifiers::ALT),
+            KeyEvent::new(KeyCode::F(6), KeyModifiers::ALT),
+            KeyEvent::new(KeyCode::F(7), KeyModifiers::ALT),
+            KeyEvent::new(KeyCode::Char('?'), KeyModifiers::META),
+            KeyEvent::new(KeyCode::Char('h'), KeyModifiers::SUPER),
+            KeyEvent::new(
+                KeyCode::Char('h'),
+                KeyModifiers::HYPER | KeyModifiers::CONTROL,
+            ),
+        ] {
+            let before = modifier_adapter_snapshot(&app, &input, &state, &runner);
+            assert!(matches!(
+                handle_key(&mut app, &mut input, event),
+                Action::Continue
+            ));
+            assert_eq!(
+                modifier_adapter_snapshot(&app, &input, &state, &runner),
+                before,
+                "adapter state changed for {event:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn n10_modifier_legacy_adapter_rejects_extra_ctrl_x_when_close_is_available() {
+        let state = TestState::new();
+        let (mut app, runner) = loop_app_with_invocation(&state, fixture_invocation(&state));
+        app.config.sources.open_workspaces = true;
+        app.config.sources.panes = false;
+        app.config.sources.agents = false;
+        let owner = crate::model::LiveTarget::new(
+            LiveIdentity::new(
+                app.navigation.scope(),
+                ObjectKind::Workspace,
+                "picker-owner",
+            )
+            .unwrap(),
+            None,
+            None,
+        )
+        .unwrap();
+        app.navigation.set_picker_owner(owner).unwrap();
+        let lists = crate::navigation_test_support::ordinary_lists();
+        queue_lists(&runner, &lists, 3);
+        app.refresh();
+        let workspace_positions: Vec<_> = app
+            .filtered
+            .iter()
+            .enumerate()
+            .filter_map(|(position, index)| {
+                (app.entries[*index].source == Source::Workspace).then_some(position)
+            })
+            .collect();
+        let mut closable = None;
+        for position in workspace_positions {
+            app.selected = position;
+            if app.can_close_selected() {
+                closable = Some(position);
+                break;
+            }
+        }
+        app.selected = closable.expect("fixture must contain a closable workspace");
+        app.update_available = Some("fixture-update".into());
+        let mut input = TuiInputSession::legacy(&app);
+        let before = modifier_adapter_snapshot(&app, &input, &state, &runner);
+        assert!(matches!(
+            handle_key(
+                &mut app,
+                &mut input,
+                KeyEvent::new(
+                    KeyCode::Char('x'),
+                    KeyModifiers::CONTROL | KeyModifiers::ALT
+                )
+            ),
+            Action::Continue
+        ));
+        assert_eq!(
+            modifier_adapter_snapshot(&app, &input, &state, &runner),
+            before
+        );
+    }
+
+    #[test]
+    fn n10_modifier_legacy_adapter_preserves_supported_binding_actions() {
+        let state = TestState::new();
+        let (mut app, runner) = loop_app_with_invocation(&state, fixture_invocation(&state));
+        app.config.picker.directory_template = Some("default.toml".into());
+        app.entries = vec![
+            entry(Source::Zoxide, "alpha"),
+            entry(Source::Zoxide, "bravo"),
+        ];
+        app.apply_filter();
+        let identity = app.selected_entry().unwrap().key().clone();
+        let mut input = TuiInputSession::legacy(&app);
+        assert!(matches!(
+            handle_key(&mut app, &mut input, key(KeyCode::Enter)),
+            Action::Open(ActivationIntent { identity: actual, slot: crate::actions::Slot::Primary })
+                if actual == identity
+        ));
+        assert!(matches!(
+            handle_key(
+                &mut app,
+                &mut input,
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT)
+            ),
+            Action::Open(ActivationIntent { identity: actual, slot: crate::actions::Slot::Template })
+                if actual == identity
+        ));
+        app.config.picker.directory_template_key = "ctrl-g".into();
+        assert!(matches!(
+            handle_key(
+                &mut app,
+                &mut input,
+                KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL)
+            ),
+            Action::Open(ActivationIntent { identity: actual, slot: crate::actions::Slot::Template })
+                if actual == identity
+        ));
+
+        input.state.vim = VimState::Search;
+        assert!(matches!(
+            handle_key(
+                &mut app,
+                &mut input,
+                KeyEvent::new(KeyCode::Char('j'), KeyModifiers::ALT)
+            ),
+            Action::Continue
+        ));
+        assert_eq!(app.selected, 1);
+        assert!(matches!(
+            handle_key(
+                &mut app,
+                &mut input,
+                KeyEvent::new(KeyCode::Char('k'), KeyModifiers::ALT)
+            ),
+            Action::Continue
+        ));
+        assert_eq!(app.selected, 0);
+        assert!(matches!(
+            handle_key(&mut app, &mut input, key(KeyCode::Char('?'))),
+            Action::Continue
+        ));
+        assert!(input.state.help_visible());
+        assert!(matches!(
+            handle_key(
+                &mut app,
+                &mut input,
+                KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)
+            ),
+            Action::Quit
+        ));
+        assert!(input.state.help_visible());
+        assert!(runner.calls.lock().unwrap().is_empty());
+    }
+
     #[test]
     fn alt_enter_opens_selected_directory_with_configured_template() {
         let mut config = Config::default();
@@ -2145,57 +2560,183 @@ mod tests {
         let mut app = App::for_test(config, Theme::load(false));
         app.entries = vec![entry(Source::Zoxide, "/tmp")];
         app.apply_filter();
+        let mut input = TuiInputSession::legacy(&app);
 
         assert!(matches!(
-            handle_key(&mut app, key(KeyCode::Enter)),
-            Action::Open
+            handle_key(&mut app, &mut input, key(KeyCode::Enter)),
+            Action::Open(ActivationIntent {
+                slot: crate::actions::Slot::Primary,
+                ..
+            })
         ));
         assert!(matches!(
-            handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT)),
-            Action::OpenTemplate
+            handle_key(
+                &mut app,
+                &mut input,
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT)
+            ),
+            Action::Open(ActivationIntent {
+                slot: crate::actions::Slot::Template,
+                ..
+            })
         ));
 
         app.config.picker.directory_template_key = "ctrl-g".into();
         assert!(matches!(
             handle_key(
                 &mut app,
+                &mut input,
                 KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL)
             ),
-            Action::OpenTemplate
+            Action::Open(ActivationIntent {
+                slot: crate::actions::Slot::Template,
+                ..
+            })
         ));
     }
 
     #[test]
     fn alt_j_and_alt_k_move_selection_while_searching() {
-        let mut app = App::for_test(Config::default(), Theme::load(false));
+        let mut config = Config::default();
+        config.picker.vim_mode = true;
+        let mut app = App::for_test(config, Theme::load(false));
         app.entries = vec![
             entry(Source::Zoxide, "alpha"),
             entry(Source::Zoxide, "bravo"),
         ];
         app.apply_filter();
-        app.input_mode = InputMode::Search;
+        let mut input = TuiInputSession::legacy(&app);
+        assert_eq!(input.state.vim, crate::picker::input::VimState::Normal);
+        assert_eq!(input.state.focus, crate::picker::input::Focus::Query);
 
-        handle_key(
-            &mut app,
-            KeyEvent::new(KeyCode::Char('j'), KeyModifiers::ALT),
+        assert!(matches!(
+            handle_key(&mut app, &mut input, key(KeyCode::Char('/'))),
+            Action::Continue
+        ));
+        assert_eq!(input.state.vim, crate::picker::input::VimState::Search);
+        assert!(matches!(
+            handle_key(&mut app, &mut input, key(KeyCode::Char('a'))),
+            Action::Continue
+        ));
+        assert_eq!(app.query, "a");
+        assert_eq!(app.filtered.len(), 2);
+        assert_eq!(input.state.cursor, 1);
+        assert_eq!(input.state.focus, crate::picker::input::Focus::Query);
+        let query_state = (
+            app.query.clone(),
+            input.state.cursor,
+            input.state.focus,
+            input.state.vim,
         );
+
+        assert!(matches!(
+            handle_key(
+                &mut app,
+                &mut input,
+                KeyEvent::new(KeyCode::Char('j'), KeyModifiers::ALT),
+            ),
+            Action::Continue
+        ));
         assert_eq!(app.selected, 1);
-        assert!(app.query.is_empty());
-
-        handle_key(
-            &mut app,
-            KeyEvent::new(KeyCode::Char('k'), KeyModifiers::ALT),
+        assert_eq!(
+            (
+                app.query.clone(),
+                input.state.cursor,
+                input.state.focus,
+                input.state.vim,
+            ),
+            query_state
         );
+
+        assert!(matches!(
+            handle_key(
+                &mut app,
+                &mut input,
+                KeyEvent::new(KeyCode::Char('k'), KeyModifiers::ALT),
+            ),
+            Action::Continue
+        ));
         assert_eq!(app.selected, 0);
-        assert!(app.query.is_empty());
+        assert_eq!(
+            (
+                app.query.clone(),
+                input.state.cursor,
+                input.state.focus,
+                input.state.vim,
+            ),
+            query_state
+        );
+    }
+
+    #[test]
+    fn legacy_adapter_uses_shared_cursor_editing_without_mirrored_app_mode() {
+        let mut config = Config::default();
+        config.picker.preview = false;
+        let mut app = App::for_test(config, Theme::load(false));
+        let mut input = TuiInputSession::legacy(&app);
+        for ch in ['a', ' ', '🙂'] {
+            assert!(matches!(
+                handle_key(&mut app, &mut input, key(KeyCode::Char(ch))),
+                Action::Continue
+            ));
+        }
+        handle_key(&mut app, &mut input, key(KeyCode::Left));
+        handle_key(&mut app, &mut input, key(KeyCode::Char('é')));
+        assert_eq!(app.query, "a é🙂");
+        assert_eq!(input.state.cursor, "a é".len());
+        handle_key(&mut app, &mut input, key(KeyCode::Delete));
+        assert_eq!(app.query, "a é");
+        handle_key(&mut app, &mut input, key(KeyCode::Backspace));
+        assert_eq!(app.query, "a ");
+        assert!(app.query.is_char_boundary(input.state.cursor));
+    }
+
+    #[test]
+    fn production_handler_unicode_and_shadowed_ctrl_o_only_change_query_and_filter() {
+        let state = TestState::new();
+        let (mut app, runner) = loop_app(&state, None);
+        app.config.picker.preview = false;
+        app.config
+            .picker
+            .filter_keys
+            .insert("project".into(), "ctrl-o".into());
+        let mut input = TuiInputSession::legacy(&app);
+        let history = state.bytes();
+        let calls = runner.calls.lock().unwrap().len();
+
+        for ch in ['é', '\u{301}', '🙂'] {
+            assert!(matches!(
+                handle_key(&mut app, &mut input, key(KeyCode::Char(ch))),
+                Action::Continue
+            ));
+        }
+        handle_key(&mut app, &mut input, key(KeyCode::Left));
+        handle_key(&mut app, &mut input, key(KeyCode::Backspace));
+        assert_eq!(app.query, "é🙂");
+        let details = input.state.details;
+        assert!(matches!(
+            handle_key(
+                &mut app,
+                &mut input,
+                KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL)
+            ),
+            Action::Continue
+        ));
+        assert_eq!(app.source_filter, Some(Source::Project));
+        assert_eq!(app.query, "é🙂");
+        assert_eq!(input.state.details, details);
+        assert_eq!(runner.calls.lock().unwrap().len(), calls);
+        assert_eq!(state.bytes(), history);
     }
 
     #[test]
     fn update_badge_renders_action_and_f5_triggers_it() {
         let mut app = App::for_test(Config::default(), Theme::load(false));
+        let mut input = TuiInputSession::legacy(&app);
         assert!(matches!(
             handle_key(
                 &mut app,
+                &mut input,
                 KeyEvent::new(KeyCode::F(5), crossterm::event::KeyModifiers::NONE)
             ),
             Action::Continue
@@ -2210,6 +2751,7 @@ mod tests {
         assert!(matches!(
             handle_key(
                 &mut app,
+                &mut input,
                 KeyEvent::new(KeyCode::F(5), crossterm::event::KeyModifiers::NONE)
             ),
             Action::Update
@@ -2246,7 +2788,7 @@ mod tests {
     fn inventory_errors_render_without_selected_rows_or_preview_and_empty_is_not_unknown() {
         use crate::navigation::inventory::ReadState;
         let mut app = App::for_test(Config::default(), Theme::load(false));
-        app.preview = false;
+        app.config.picker.preview = false;
         let mut inventory = crate::sources::test_inventory(&app.navigation);
         inventory.agents.state = ReadState::Unavailable(crate::herdr::TransportError::new(
             crate::herdr::Failure::Unsupported,
@@ -2441,21 +2983,23 @@ mod tests {
     fn vim_mode_uses_normal_keys_then_searches_with_slash() {
         let mut app = App::for_test(Config::default(), Theme::load(false));
         app.config.picker.vim_mode = true;
-        handle_key(&mut app, key(KeyCode::Char('j')));
+        app.config.picker.preview = false;
+        let mut input = TuiInputSession::legacy(&app);
+        handle_key(&mut app, &mut input, key(KeyCode::Char('j')));
         assert!(app.query.is_empty());
 
-        handle_key(&mut app, key(KeyCode::Char('a')));
+        handle_key(&mut app, &mut input, key(KeyCode::Char('a')));
         assert_eq!(app.source_filter, Some(Source::Agent));
 
-        handle_key(&mut app, key(KeyCode::Char('/')));
-        assert_eq!(app.input_mode, InputMode::Search);
+        handle_key(&mut app, &mut input, key(KeyCode::Char('/')));
+        assert_eq!(input.state.vim, VimState::Search);
         assert_eq!(app.source_filter, Some(Source::Agent));
 
-        handle_key(&mut app, key(KeyCode::Char('j')));
+        handle_key(&mut app, &mut input, key(KeyCode::Char('j')));
         assert_eq!(app.query, "j");
 
-        handle_key(&mut app, key(KeyCode::Esc));
-        assert_eq!(app.input_mode, InputMode::Normal);
+        handle_key(&mut app, &mut input, key(KeyCode::Esc));
+        assert_eq!(input.state.vim, VimState::Normal);
     }
 
     #[test]
@@ -2463,69 +3007,540 @@ mod tests {
         let mut app = App::for_test(Config::default(), Theme::load(false));
         app.config.picker.vim_mode = true;
         app.config.picker.vim_filter_search = true;
+        let mut input = TuiInputSession::legacy(&app);
 
-        handle_key(&mut app, key(KeyCode::Char('a')));
+        handle_key(&mut app, &mut input, key(KeyCode::Char('a')));
         assert_eq!(app.source_filter, Some(Source::Agent));
-        assert_eq!(app.input_mode, InputMode::Search);
+        assert_eq!(input.state.vim, VimState::Search);
 
-        handle_key(&mut app, key(KeyCode::Char('c')));
+        handle_key(&mut app, &mut input, key(KeyCode::Char('c')));
         assert_eq!(app.query, "c");
+    }
+
+    #[test]
+    fn n10_host_prefix_blocks_dispatch_and_help_from_the_same_saved_menu_config() {
+        let state = TestState::new();
+        let (mut app, _runner) = loop_app_with_invocation(&state, fixture_invocation(&state));
+        app.config.picker.focus_cycle_key = "CTRL+G".into();
+        let diagnostics = app.config.avoid_default_prefix_conflict('G');
+
+        let mut input = TuiInputSession {
+            state: InputState::merged(&app.config.picker, &app.query),
+            merged: None,
+        };
+        let before = input.state.focus;
+        assert!(matches!(
+            handle_key(
+                &mut app,
+                &mut input,
+                KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL),
+            ),
+            Action::Continue
+        ));
+        assert_eq!(input.state.focus, before);
+
+        input.state.focus = crate::keymap::Focus::MachineFilter;
+        handle_key(&mut app, &mut input, key(KeyCode::Enter));
+        assert!(input.state.menu.is_some());
+        handle_key(&mut app, &mut input, key(KeyCode::Char('?')));
+        let descriptor = input.descriptor();
+        assert_eq!(
+            descriptor.key_context.focus,
+            crate::keymap::Focus::MachineFilter
+        );
+        assert!(descriptor.key_context.menu);
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 30)).unwrap();
+        terminal
+            .draw(|frame| draw_with_status(frame, &app, &descriptor, None))
+            .unwrap();
+        let text = buffer_text(&terminal);
+        assert!(
+            !text.contains("cycle focus"),
+            "host key leaked into Help:\n{text}"
+        );
+        for expected in ["choose filter", "back / close"] {
+            assert!(text.contains(expected), "missing {expected}:\n{text}");
+        }
+        assert!(diagnostics.iter().any(|line| {
+            line.contains("picker.focus_cycle_key: ctrl-g conflicts with Herdr keys.prefix")
+                && line.contains("merged binding inactive")
+        }));
     }
 
     #[test]
     fn question_mark_toggles_registry_help_overlay() {
         let mut app = App::for_test(Config::default(), Theme::load(false));
-        handle_key(&mut app, key(KeyCode::Char('?')));
-        assert_eq!(app.input_mode, InputMode::Help);
+        let mut input = TuiInputSession::legacy(&app);
+        handle_key(&mut app, &mut input, key(KeyCode::Char('?')));
+        assert!(input.state.help_visible());
 
         let backend = TestBackend::new(80, 30);
         let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|f| draw(f, &app)).unwrap();
+        terminal
+            .draw(|f| draw_with_status(f, &app, &input.descriptor(), None))
+            .unwrap();
         let text = buffer_text(&terminal);
         assert!(text.contains(" Keybindings "));
-        assert!(text.contains("toggle preview"));
+        assert!(text.contains("toggle Details"));
         assert!(text.contains("agents"));
+        for label in [
+            "query cursor left",
+            "query cursor right",
+            "query cursor start",
+            "query cursor end",
+            "backspace query",
+            "delete query",
+        ] {
+            assert!(text.contains(label), "missing {label}:\n{text}");
+        }
+        assert!(
+            text.contains(" Filters"),
+            "Filters clipped at 80x30:\n{text}"
+        );
         assert!(!text.contains("?/?"));
 
-        handle_key(&mut app, key(KeyCode::Char('?')));
-        assert_eq!(app.input_mode, InputMode::Normal);
+        handle_key(&mut app, &mut input, key(KeyCode::Char('?')));
+        assert!(!input.state.help_visible());
+    }
+
+    #[test]
+    fn help_conditional_actions_are_complete_at_80x30() {
+        assert_eq!(help_text_width("⌥↵"), 2);
+        assert_eq!(help_text_width("↑/⌥K/k"), 6);
+        assert_eq!(
+            wrap_help_description("directory template", 0),
+            ["directory template"]
+        );
+        let narrow = wrap_help_description("directory template", 1);
+        assert!(narrow.len() <= "directorytemplate".chars().count());
+        assert!(narrow.iter().all(|line| help_text_width(line) <= 1));
+
+        fn rect_lines(terminal: &Terminal<TestBackend>, area: Rect) -> Vec<String> {
+            let buffer = terminal.backend().buffer();
+            (area.y..area.bottom())
+                .map(|y| {
+                    (area.x..area.right())
+                        .map(|x| buffer[(x, y)].symbol())
+                        .collect()
+                })
+                .collect()
+        }
+
+        fn rendered_description(lines: &[String], key: &str, expected: &str) -> String {
+            let row = lines
+                .iter()
+                .position(|line| line.trim_start().starts_with(key))
+                .unwrap_or_else(|| panic!("missing key {key:?} in column:\n{}", lines.join("\n")));
+            let mut rendered = lines[row].split_once(key).unwrap().1.trim().to_string();
+            let mut next = row + 1;
+            while rendered.len() < expected.len() && next < lines.len() {
+                let continuation = lines[next].trim();
+                if continuation.is_empty() {
+                    break;
+                }
+                rendered.push(' ');
+                rendered.push_str(continuation);
+                next += 1;
+            }
+            rendered
+        }
+
+        for template_key in [None, Some("option+enter")] {
+            for vim in [None, Some(VimState::Normal), Some(VimState::Search)] {
+                for (template, update) in
+                    [(false, false), (true, false), (false, true), (true, true)]
+                {
+                    let mut config = Config::default();
+                    config.picker.vim_mode = vim.is_some();
+                    config.picker.directory_template =
+                        template.then(|| "fixture-template.toml".into());
+                    if let Some(template_key) = template_key {
+                        config.picker.directory_template_key = template_key.into();
+                    }
+                    let mut app = App::for_test(config, Theme::load(false));
+                    app.entries = vec![entry(Source::Project, "template fixture")];
+                    app.apply_filter();
+                    app.update_available = update.then(|| "fixture-update".into());
+                    let mut input = TuiInputSession::legacy(&app);
+                    if vim == Some(VimState::Search) {
+                        assert!(matches!(
+                            handle_key(&mut app, &mut input, key(KeyCode::Char('/'))),
+                            Action::Continue
+                        ));
+                    }
+                    assert_eq!(input.state.vim, vim.unwrap_or(VimState::Normal));
+                    assert!(matches!(
+                        handle_key(&mut app, &mut input, key(KeyCode::Char('?'))),
+                        Action::Continue
+                    ));
+                    assert!(input.state.help_visible());
+                    let descriptor = input.descriptor();
+                    let bindings = effective_bindings(
+                        &app.config.picker,
+                        descriptor.key_context,
+                        key_availability(&app),
+                    );
+
+                    let area = Rect::new(0, 0, 80, 30);
+                    let mut terminal =
+                        Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
+                    terminal
+                        .draw(|frame| draw_with_status(frame, &app, &descriptor, None))
+                        .unwrap();
+                    let popup = area.centered(
+                        Constraint::Percentage(94),
+                        Constraint::Length(area.height.saturating_sub(2).max(1)),
+                    );
+                    let content = Block::default().borders(Borders::ALL).inner(popup);
+                    let columns = Layout::default()
+                        .direction(Direction::Horizontal)
+                        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+                        .split(content);
+                    let left = rect_lines(&terminal, columns[0]);
+                    let right = rect_lines(&terminal, columns[1]);
+                    let all = format!("{}\n{}", left.join("\n"), right.join("\n"));
+
+                    for heading in ["Navigation", "Editing"] {
+                        assert!(
+                            left.iter().any(|line| line.contains(heading)),
+                            "missing {heading}:\n{all}"
+                        );
+                    }
+                    for heading in ["Actions", "View", "Filters"] {
+                        assert!(
+                            right.iter().any(|line| line.contains(heading)),
+                            "missing {heading}:\n{all}"
+                        );
+                    }
+                    for binding in &bindings {
+                        let column = if matches!(binding.group, "Navigation" | "Editing") {
+                            &left
+                        } else {
+                            &right
+                        };
+                        assert_eq!(
+                            rendered_description(column, &binding.key_label(), &binding.label),
+                            binding.label,
+                            "incomplete {:?} for {} with template={template}, update={update}, vim={vim:?}:\n{all}",
+                            binding.key_label(),
+                            binding.label,
+                        );
+                    }
+                    for label in [
+                        "query cursor left",
+                        "query cursor right",
+                        "query cursor start",
+                        "query cursor end",
+                        "backspace query",
+                        "delete query",
+                    ] {
+                        assert!(
+                            left.iter().any(|line| line.contains(label)),
+                            "missing {label}:\n{all}"
+                        );
+                    }
+                    if template {
+                        assert_eq!(
+                            rendered_description(
+                                &right,
+                                "⌥↵",
+                                "open selected with directory template"
+                            ),
+                            "open selected with directory template"
+                        );
+                    } else {
+                        assert!(
+                            !right
+                                .iter()
+                                .any(|line| line.contains("open selected with directory")),
+                            "unavailable template action rendered:\n{all}"
+                        );
+                    }
+                    if update {
+                        assert_eq!(
+                            rendered_description(&right, "F5", "install available update"),
+                            "install available update"
+                        );
+                    } else {
+                        assert!(
+                            !right
+                                .iter()
+                                .any(|line| line.contains("install available update")),
+                            "unavailable update action rendered:\n{all}"
+                        );
+                    }
+                    let last_filter = bindings
+                        .iter()
+                        .rev()
+                        .find(|binding| binding.group == "Filters")
+                        .unwrap();
+                    assert_eq!(
+                        rendered_description(&right, &last_filter.key_label(), &last_filter.label),
+                        last_filter.label
+                    );
+                    assert!(
+                        (0..area.height)
+                            .any(|y| terminal.backend().buffer()[(popup.x, y)].symbol() == "└"),
+                        "missing Help bottom border:\n{all}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
     fn registry_reports_active_toggle_state() {
-        let mut app = App::for_test(Config::default(), Theme::load(false));
-        app.preview = true;
-        let preview = keybindings(&app)
-            .into_iter()
-            .find(|binding| binding.command == Command::TogglePreview)
-            .unwrap();
+        let app = App::for_test(Config::default(), Theme::load(false));
+        let input = TuiInputSession::legacy(&app).descriptor();
+        assert!(binding_active(&Command::ToggleDetails, &app, &input));
+    }
 
-        assert!(preview.is_active(&app));
+    #[test]
+    fn help_uses_live_shadowed_keys_and_the_saved_origin_context() {
+        let mut config = Config::default();
+        config
+            .picker
+            .filter_keys
+            .insert("project".into(), "ctrl-o".into());
+        config.picker.vim_mode = true;
+        config.picker.directory_template = Some("default.toml".into());
+        let mut app = App::for_test(config, Theme::load(false));
+        app.update_available = Some("9.9.9".into());
+
+        let mut query = TuiInputSession {
+            state: InputState::merged(&app.config.picker, &app.query),
+            merged: None,
+        };
+        handle_key(&mut app, &mut query, key(KeyCode::Char('?')));
+        let mut terminal = Terminal::new(TestBackend::new(80, 30)).unwrap();
+        terminal
+            .draw(|frame| draw_with_status(frame, &app, &query.descriptor(), None))
+            .unwrap();
+        let text = buffer_text(&terminal);
+        assert!(text.contains("⌃O"));
+        assert!(text.contains("projects"));
+        assert!(!text.contains("toggle Details"));
+        assert!(text.contains("query cursor left"));
+
+        handle_key(&mut app, &mut query, key(KeyCode::Char('?')));
+        handle_key(&mut app, &mut query, key(KeyCode::F(6)));
+        handle_key(&mut app, &mut query, key(KeyCode::Char('?')));
+        terminal
+            .draw(|frame| draw_with_status(frame, &app, &query.descriptor(), None))
+            .unwrap();
+        let text = buffer_text(&terminal);
+        assert!(text.contains("collapse / parent"));
+        assert!(!text.contains("query cursor left"));
+
+        app.config.picker.focus_cycle_key = "left".into();
+        app.config.picker.collapse_key = "f9".into();
+        terminal
+            .draw(|frame| draw_with_status(frame, &app, &query.descriptor(), None))
+            .unwrap();
+        let text = buffer_text(&terminal);
+        assert!(text.contains("F9"));
+        assert!(text.contains("collapse / parent"));
+        assert!(!text.contains("cycle focus"));
+        assert!(!text.contains('←'));
+        app.config.picker.focus_cycle_key = "f6".into();
+        app.config.picker.collapse_key = "left".into();
+
+        handle_key(&mut app, &mut query, key(KeyCode::Char('?')));
+        let rows = Rows::default();
+        let picker_config = app.config.picker.clone();
+        let reduce = |query: &mut TuiInputSession, app: &mut App, event| {
+            input::reduce(
+                &mut query.state,
+                &mut app.query,
+                None,
+                event,
+                InputContext {
+                    config: &picker_config,
+                    visible: VisibleRegions::merged(false),
+                    rows: &rows,
+                    actions: ActionAvailability::default(),
+                    legacy_filter: None,
+                    machine_options: &[],
+                },
+            );
+        };
+        reduce(&mut query, &mut app, key(KeyCode::F(6)));
+        let mut footer_terminal = Terminal::new(TestBackend::new(140, 30)).unwrap();
+        footer_terminal
+            .draw(|frame| draw_with_status(frame, &app, &query.descriptor(), None))
+            .unwrap();
+        assert!(buffer_text(&footer_terminal).contains("open filter menu"));
+        reduce(&mut query, &mut app, key(KeyCode::Enter));
+        reduce(&mut query, &mut app, key(KeyCode::Char('?')));
+        let descriptor = query.descriptor();
+        assert_eq!(
+            descriptor.key_context.focus,
+            crate::keymap::Focus::MachineFilter
+        );
+        assert_eq!(descriptor.key_context.vim, VimState::Search);
+        assert!(descriptor.key_context.menu);
+        terminal
+            .draw(|frame| draw_with_status(frame, &app, &descriptor, None))
+            .unwrap();
+        let text = buffer_text(&terminal);
+        for expected in ["choose filter", "cycle focus", "back / close"] {
+            assert!(text.contains(expected), "missing {expected}:\n{text}");
+        }
+        for suppressed in [
+            "cycle provenance",
+            "projects",
+            "open selected",
+            "mark / unmark",
+            "install available update",
+            "open selected with directory template",
+            "⌥J",
+        ] {
+            assert!(
+                !text.contains(suppressed),
+                "menu Help leaked {suppressed}:\n{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn spec3_help_and_dispatch_follow_reserved_key_owners() {
+        for (command, label) in [
+            (Command::FocusCycle, "cycle focus"),
+            (Command::Collapse, "collapse / parent"),
+            (Command::Expand, "expand"),
+            (Command::TechnicalDetails, "technical Details"),
+        ] {
+            let mut refresh_config = Config::default();
+            set_merged_key(&mut refresh_config, &command, "f8");
+            let mut refresh_app = App::for_test(refresh_config, Theme::load(false));
+            let text = merged_help_text(&mut refresh_app, crate::keymap::Focus::Browse, false);
+            assert!(!text.contains(label), "Refresh leaked {label}:\n{text}");
+            assert!(!text.to_ascii_lowercase().contains("refresh"));
+            assert!(!text.contains("F8"));
+
+            let mut update_config = Config::default();
+            set_merged_key(&mut update_config, &command, "f5");
+            let mut update_app = App::for_test(update_config, Theme::load(false));
+            let text = merged_help_text(&mut update_app, crate::keymap::Focus::Browse, false);
+            assert!(!text.contains(label));
+            assert!(!text.contains("install available update"));
+            update_app.update_available = Some("fixture".into());
+            let text = merged_help_text(&mut update_app, crate::keymap::Focus::Browse, false);
+            assert!(!text.contains(label));
+            assert!(text.contains("install available update"));
+            let mut update_input = TuiInputSession {
+                state: InputState::merged(&update_app.config.picker, &update_app.query),
+                merged: None,
+            };
+            assert!(matches!(
+                handle_key(&mut update_app, &mut update_input, key(KeyCode::F(5))),
+                Action::Update
+            ));
+
+            let mut close_config = Config::default();
+            set_merged_key(&mut close_config, &command, "ctrl-x");
+            let mut close_app = App::for_test(close_config, Theme::load(false));
+            assert!(!close_app.can_close_selected());
+            let text = merged_help_text(&mut close_app, crate::keymap::Focus::Browse, false);
+            assert!(!text.contains(label));
+            assert!(!text.contains("close workspace"));
+
+            let mut template_config = Config::default();
+            set_merged_key(&mut template_config, &command, "alt-enter");
+            let mut template_app = App::for_test(template_config, Theme::load(false));
+            template_app.entries = vec![entry(Source::Project, "template-target")];
+            template_app.apply_filter();
+            let text = merged_help_text(&mut template_app, crate::keymap::Focus::Browse, false);
+            assert!(!text.contains(label));
+            assert!(!text.contains("open selected with directory template"));
+            template_app.config.picker.directory_template = Some("default.toml".into());
+            let text = merged_help_text(&mut template_app, crate::keymap::Focus::Browse, false);
+            assert!(!text.contains(label));
+            assert!(text.contains("open selected with directory template"));
+            let expected = template_app.selected_entry().unwrap().key().clone();
+            let mut template_input = TuiInputSession {
+                state: InputState::merged(&template_app.config.picker, &template_app.query),
+                merged: None,
+            };
+            assert!(matches!(
+                handle_key(
+                    &mut template_app,
+                    &mut template_input,
+                    KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT),
+                ),
+                Action::Open(ActivationIntent {
+                    identity,
+                    slot: crate::actions::Slot::Template,
+                }) if identity == expected
+            ));
+        }
+
+        let mut menu_config = Config::default();
+        menu_config.picker.focus_cycle_key = "f5".into();
+        let mut menu_app = App::for_test(menu_config, Theme::load(false));
+        menu_app.update_available = Some("fixture".into());
+        let text = merged_help_text(&mut menu_app, crate::keymap::Focus::MachineFilter, true);
+        assert!(!text.contains("cycle focus"));
+        assert!(!text.contains("install available update"));
+        for expected in ["choose filter", "back / close"] {
+            assert!(text.contains(expected), "missing {expected}:\n{text}");
+        }
+    }
+
+    #[test]
+    fn vim_search_help_hides_normal_aliases_but_keeps_plain_filter_shortcuts() {
+        let mut config = Config::default();
+        config.picker.vim_mode = true;
+        let mut app = App::for_test(config, Theme::load(false));
+        let mut input = TuiInputSession {
+            state: InputState::merged(&app.config.picker, &app.query),
+            merged: None,
+        };
+        handle_key(&mut app, &mut input, key(KeyCode::Char('?')));
+        let mut terminal = Terminal::new(TestBackend::new(80, 30)).unwrap();
+        terminal
+            .draw(|frame| draw_with_status(frame, &app, &input.descriptor(), None))
+            .unwrap();
+        let text = buffer_text(&terminal);
+        assert!(text.contains("⌃P"));
+        assert!(text.contains("⌥J"));
+        assert!(!text.contains("/           search"));
+        assert!(!text.contains("↓/⌥J/j"));
     }
 
     #[test]
     fn registry_maps_ctrl_b_to_mark_without_stealing_enter() {
         let app = App::for_test(Config::default(), Theme::load(false));
-        let mark = keybindings(&app)
-            .into_iter()
-            .find(|binding| binding.command == Command::ToggleMark)
-            .unwrap();
-
-        assert!(mark.label.contains("mark"));
-        assert!(mark.matches(
-            &app,
-            KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL)
-        ));
-        assert!(!mark.matches(&app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
-        assert!(keybindings(&app)
-            .into_iter()
-            .find(|binding| binding.command == Command::Open)
-            .unwrap()
-            .matches(&app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
+        let context = crate::keymap::InputContext {
+            presentation: crate::keymap::Presentation::Legacy,
+            focus: crate::keymap::Focus::Query,
+            vim: VimState::Search,
+            menu: false,
+        };
+        let available = key_availability(&app);
+        assert_eq!(
+            crate::keymap::resolve(
+                &app.config.picker,
+                context,
+                available,
+                KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL),
+            ),
+            Some(Command::ToggleMark)
+        );
+        assert_eq!(
+            crate::keymap::resolve(
+                &app.config.picker,
+                context,
+                available,
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            ),
+            Some(Command::Open)
+        );
     }
 
     #[test]
-    fn compact_footer_groups_movement_and_lists_filters() {
+    fn compact_footer_lists_only_live_command_aliases() {
         let mut app = App::for_test(Config::default(), Theme::load(false));
         app.config.picker.vim_mode = true;
         let backend = TestBackend::new(110, 20);
@@ -2533,10 +3548,11 @@ mod tests {
         terminal.draw(|f| draw(f, &app)).unwrap();
         let text = buffer_text(&terminal);
 
-        assert!(text.contains("j/k up/down"));
-        assert!(text.contains("a agent"));
-        assert!(text.contains("z zoxide"));
-        assert!(!text.contains("k move up"));
+        assert!(text.contains("↑/⌥K/k up"));
+        assert!(text.contains("↓/⌥J/j down"));
+        assert!(text.contains("⌃A/a agent"));
+        assert!(text.contains("⌃Z/z zoxide"));
+        assert!(!text.contains("j/k"));
     }
 
     #[test]
@@ -2544,16 +3560,18 @@ mod tests {
         let mut app = App::for_test(Config::default(), Theme::load(false));
         app.config.picker.vim_mode = true;
         app.config.picker.vim_filter_search = true;
-        assert_eq!(app.input_mode, InputMode::Normal);
+        let mut input = TuiInputSession::legacy(&app);
+        assert_eq!(input.state.vim, VimState::Normal);
 
-        handle_key(&mut app, key(KeyCode::Char('a')));
-        assert_eq!(app.input_mode, InputMode::Search);
+        handle_key(&mut app, &mut input, key(KeyCode::Char('a')));
+        assert_eq!(input.state.vim, VimState::Search);
 
-        handle_key(&mut app, key(KeyCode::Char('?')));
-        assert_eq!(app.input_mode, InputMode::Help);
+        handle_key(&mut app, &mut input, key(KeyCode::Char('?')));
+        assert!(input.state.help_visible());
 
-        handle_key(&mut app, key(KeyCode::Esc));
-        assert_eq!(app.input_mode, InputMode::Normal);
+        handle_key(&mut app, &mut input, key(KeyCode::Esc));
+        assert_eq!(input.state.vim, VimState::Search);
+        assert!(!input.state.help_visible());
     }
     #[test]
     fn foreign_paths_render_as_reported_text_and_unknown_ownership_never_says_create() {
@@ -2614,18 +3632,19 @@ mod tests {
             .description();
         assert!(preview_text(&app, app.selected_entry().unwrap()).contains(&description));
         assert!(buffer_text(&terminal).contains(&description));
+        let mut input = TuiInputSession::legacy(&app);
         assert!(matches!(
-            handle_key(&mut app, key(KeyCode::Down)),
+            handle_key(&mut app, &mut input, key(KeyCode::Down)),
             Action::Continue
         ));
         assert!(matches!(
-            handle_key(&mut app, key(KeyCode::Enter)),
-            Action::Open
+            handle_key(&mut app, &mut input, key(KeyCode::Enter)),
+            Action::Open(_)
         ));
         assert!(app
             .open_selected(false)
             .unwrap_err()
-            .contains("selection changed"));
+            .contains("has not been displayed for this identity and slot"));
         assert!(runner.calls.lock().unwrap().is_empty());
         terminal.draw(|frame| draw(frame, &app)).unwrap();
         app.commit_displayed_actions();
@@ -2646,9 +3665,11 @@ mod tests {
             app.entries = vec![pane.clone()];
             app.entries[0].source = source;
             app.apply_filter();
+            let mut input = TuiInputSession::legacy(&app);
             assert!(matches!(
                 handle_key(
                     &mut app,
+                    &mut input,
                     KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL)
                 ),
                 Action::Continue
@@ -3090,7 +4111,7 @@ mod tests {
         app.refresh();
         let calls = runner.calls.lock().unwrap().len();
         let bytes = directory.bytes();
-        let view = ViewState::capture(&app);
+        let view = ViewState::capture_default(&app);
         let filtered = app.filtered.clone();
         let input = app.picker_input();
         let mut state = picker_expand_all(&input);
@@ -3132,7 +4153,7 @@ mod tests {
         assert_eq!(directory.bytes(), bytes);
         assert_eq!(app.filtered, filtered);
         app.query = view.query.clone();
-        assert_eq!(ViewState::capture(&app), view);
+        assert_eq!(ViewState::capture_default(&app), view);
         assert!(app
             .open_selected(false)
             .unwrap_err()
@@ -3156,7 +4177,7 @@ mod tests {
         app.refresh();
         let calls = runner.calls.lock().unwrap().len();
         let bytes = directory.bytes();
-        let view = ViewState::capture(&app);
+        let view = ViewState::capture_default(&app);
         let legacy_ids: Vec<_> = app.entries.iter().map(|e| e.key().clone()).collect();
         assert!(app
             .entries
@@ -3217,7 +4238,7 @@ mod tests {
         }
         assert_eq!(runner.calls.lock().unwrap().len(), calls);
         assert_eq!(directory.bytes(), bytes);
-        assert_eq!(ViewState::capture(&app), view);
+        assert_eq!(ViewState::capture_default(&app), view);
         assert_eq!(
             app.entries
                 .iter()
@@ -3228,7 +4249,10 @@ mod tests {
         assert!(app.previous_workspace_id.is_none());
         let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
         terminal
-            .draw(|frame| draw_with_status(frame, &app, None))
+            .draw(|frame| {
+                let input = InputState::legacy(&app.config.picker, &app.query).descriptor();
+                draw_with_status(frame, &app, &input, None);
+            })
             .unwrap();
         let text = buffer_text(&terminal);
         assert!(text.contains("Server scope: owner unknown"));

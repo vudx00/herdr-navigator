@@ -877,3 +877,226 @@ Commit preparation staged exactly the 53 reviewed files. The offline path and cr
 The user has now authorized a whitespace-check exception only for those four byte-preserved Herdr 0.9.0 help captures. The full `git diff --cached --check` still exits 2 with exactly the five warnings listed above; it did not pass strict checking. The strict staged check passes for every other path, with four exact `:(top,literal,exclude)` path exclusions. A separate check restricted to those four paths passes with command-only `-c core.whitespace=-blank-at-eol,-blank-at-eof`. This exception preserves the approved raw evidence. It changes no fixture bytes, persistent Git configuration, attributes, hooks or other protections.
 
 The indexed and worktree capture SHA-256 hashes match `/tmp/n09-ownership-zimuurk5/final-hashes.json`. All other recorded file hashes also match except this task record. Only `tasks/todo.md` changed during this authorization follow-up and is re-staged. Both review PASS results still apply to the unchanged source. The whitespace blocker is resolved for the authorized normal local commit `feat: add qualified navigation and picker foundations`, with exactly 53 reviewed files staged on `feat/navigator-machine-panes`. N10 has not started; N07/S01 and release gates remain blocked. No merge or push is authorized.
+
+## N10 shared keyboard input
+
+N10 starts from reviewed checkpoint `4e98955fec73caa0cfc7bf15305a6525e60a0f52`. The implementation keeps the legacy renderer active and keeps the merged-request warning. It adds no client transport, native machine action, Refresh command, mouse handling, asynchronous refresh, or N11 row layout.
+
+- [x] Added one pure reducer in `src/picker/input.rs`. It receives the picker config, actual presentation, visible regions, projected rows, selected action availability, machine choices, and the caller-owned query and picker state. It performs no I/O.
+- [x] Removed `App::input_mode` and the runtime preview toggle from App state. The TUI input session owns query cursor, focus, vim Normal/Search, Help return state, open filter menu, and Details state. `App::query` is the only query string. The production session allocates no merged `PickerInput` or `PickerState`.
+- [x] Added byte-indexed UTF-8 scalar editing for insertion, Backspace, Delete, Left, Right, Home, and End. Query replacement reconciliation uses a fingerprint only to move the cursor to the new end. It does not mirror query text or select a match.
+- [x] Added merged focus cycling, Browse disclosure and visible-parent movement, cached Machine/Type menus, independent provenance filters, full reset, layered Esc, Help restoration, technical Details state, and typed activation intents. Selection movement never changes focus or current-target observation.
+- [x] Unified dispatch, Help, and config diagnostics on `src/keymap.rs`. Existing commands keep precedence. New merged collisions fail closed. F6 is active only for an actual merged input context. F8 remains reserved for N15 and has no Refresh command or hint.
+- [x] Added App identity-and-slot checks for activation intents. A fixture-only merged tab cannot use a legacy entry index or a fabricated displayed token. Existing draw-success token commit and action revalidation remain in place.
+- [x] Added reducer, App, config, and production TUI-adapter tests. Inputs cover ASCII spaces, accented scalars, combining marks, emoji, browse parents, empty groups, all visible focus regions, menu commit/cancel, Ctrl-P/R/S and Tab under all matchers, vim launch/search, exact Help restoration, Details/reset state, unknown modifiers, and unavailable/structural activation.
+
+### N10 verification
+
+All commands ran offline through `python3 /tmp/n10-offline-vZtbxR/run.py <unique-log-name> <command>`. The runner uses temporary HOME/XDG/TMPDIR directories, clears inherited Herdr routing, stubs Herdr/SSH/download commands closed, and removes each isolation directory after checking for leftover TUI fixtures. Every command had a 240-second outer limit and a 230-second child limit. No command timed out, touched private state, or left a fixture behind.
+
+| Validation | Logs | Result |
+| --- | --- | --- |
+| `cargo test --offline picker::input::tests -- --test-threads=1` | `focused-input-accepted.log` | 9 passed |
+| Focused config and keymap suites | `focused-config-final.log`, `focused-keymap-final.log` | 23 and 4 passed |
+| Exact production adapter and activation-token checks | `focused-tui-adapter-final.log`, `focused-activation-final.log` | 1 and 1 passed |
+| Three `cargo test --offline` runs | `full-parallel-accepted-1.log` through `full-parallel-accepted-3.log` | Each 276 passed, 1 existing ignored control |
+| `cargo test --offline -- --test-threads=1` | `full-serial-accepted.log` | 276 passed, 1 existing ignored control |
+| Ten exact history-sentinel runs | `history-sentinel-accepted-1.log` through `history-sentinel-accepted-10.log` | 10 passed |
+| `cargo fmt --all -- --check`, `cargo check --offline` | `fmt-accepted.log`, `check-accepted.log` | Passed |
+| `cargo clippy --offline --all-targets -- -D warnings` | `clippy-accepted.log` | Passed |
+| `cargo build --offline --release` | `release-accepted.log` | Passed, build only |
+| `git diff --check` | `diff-accepted.log` | Passed |
+
+Verification-start status, the complete diff at that point, and HEAD are retained as `fix-status.txt`, `fix.diff`, and `start-head.txt` in the same log directory. The unintended deletion of `.agents/product-marketing.md` was restored from the reviewed checkpoint. No commit, merge, push, publish, dependency download, live Herdr operation, network call, or SSH operation ran.
+
+### N10 remaining limits
+
+N10 completes the shared input interface, not the merged renderer. Production still supplies a legacy presentation descriptor because combined navigation is unavailable. N11 owns visible controls, text focus markers, merged rows, cursor placement, responsive Details, and technical Details content. N15 owns F8 Refresh. Client-authorized combined activation and native machine New workspace remain blocked by later integration work. N07, S01, live terminal/platform validation, and release qualification remain incomplete.
+
+### N10 independent review backlog
+
+Standards review `sa-715b8c56` and specification review `sa-d9850164` both returned FAIL. Passing tests do not change either review result.
+
+| Review finding | Status |
+| --- | --- |
+| Standards 1, query registry and Help/Left precedence | Repaired pending independent recheck; overlaps specification 4 |
+| Standards 2, disabled Vim collision | Repaired pending independent recheck |
+| Standards 3, parser/host fixture matrices and Alt-J/Alt-K Normal-mode coverage | Repaired pending independent recheck |
+| Standards 4, missing Unreleased record | Repaired pending independent recheck |
+| Specification 1, exact modifier matching for registry and reducer-owned keys | Repaired pending independent recheck |
+| Specification 2, host prefix remains active after warning | Repaired pending independent recheck |
+| Specification 3, conditional F5 and F8 reservation scope | Repaired pending independent recheck |
+| Specification 4, Help/Ctrl-O shadowing and missing edit behavior | Repaired pending independent recheck; overlaps standards 1 |
+
+The specification finding 1 repair requires exact modifier equality in the registry and on reducer-owned Ctrl-C, Esc, menu, filter Enter, cursor and deletion paths. Focused registry, reducer and production `handle_key` tests cover supported exact bindings and reject extra Control, Alt, Shift, Super, Hyper and Meta bits without changing input, picker, App, history or runner state. Red test logs and repair checks are under `/tmp/n10-modifier-vsVnGH`; the repair-start snapshot is `/tmp/n10-repair-start-20260911-230947`.
+
+| Repair validation | Result |
+| --- | --- |
+| Pre-fix exact registry test | Failed because Ctrl-Alt-C resolved as Back |
+| Pre-fix reducer tests | Failed because Ctrl-Alt-C quit and modified reducer-owned keys changed state; one initial test fixture also selected after applying empty-result filters and was corrected before the production edit |
+| Pre-fix production `handle_key` tests | Failed because unsupported combinations returned actions; one initial close fixture selected no closable workspace and was corrected to set an explicit nonmatching picker owner |
+| `cargo test --offline keymap::tests -- --test-threads=1` | 5 passed |
+| `cargo test --offline picker::input::tests -- --test-threads=1` | 12 passed |
+| Exact production adapter tests | 3 passed |
+| `cargo test --offline config::tests -- --test-threads=1` | 23 passed |
+| `cargo test --offline -- --test-threads=1` | 283 passed, 1 existing ignored control |
+| `cargo fmt --all -- --check` and `cargo check --offline` | Passed |
+| `cargo clippy --offline --all-targets -- -D warnings` | Passed |
+| `cargo build --offline --release` | Passed, build only |
+| `git diff --check` | Passed |
+
+The first attempt to run the final format check did not start Cargo because the isolation runner refuses to overwrite an existing `final-fmt.log`. The rerun used a unique log name and passed. No other review finding is claimed repaired. Both review axes remain FAIL pending independent recheck, so commit, merge, push and branch cleanup remain blocked.
+
+### Shared registry, Help, and disabled Vim repair
+
+Standards findings 1 and 2 and specification finding 4 are repaired pending independent recheck. `effective_bindings` now admits configured merged keys against every supported focus and Vim context with scope overlap, then applies the current focus, menu, Vim state, and runtime availability. It removes each shadowed key rather than dropping an otherwise live alias. Resolve, the footer, and Help consume that same ordered result.
+
+The registry now owns Left, Right, Home, End, Backspace, and Delete under Query focus. Query editing still works in Normal and Search. Browse Left and Right retain disclosure because their scope does not overlap Query. A focus-cycle Left binding is rejected in all merged contexts, while an unrelated F9 collapse binding remains active in Browse. Diagnostics use the same scope-overlap check and no longer report impossible plain j/k Vim collisions when Vim is disabled.
+
+Menu context retains plain Up/Down, Enter as `choose filter`, focus cycle, Back, and Help. It suppresses selection movement aliases, filters, templates, marks, updates, and other normal commands. Help uses the focus, Vim state, and menu saved when Help opened. Ctrl-O assigned to Projects keeps registry precedence, and neither Help nor the footer advertises the shadowed Details command. The Help popup uses two columns so the six editing rows and Filters remain visible at 80x30.
+
+The pre-fix semantic run is `/tmp/n10-registry-repair-x0LsFZ/red-keymap-registry.log.log`. Five existing keymap tests passed and three new checks failed because cursor keys were outside the registry, focus Left stole Browse, and shadowed Ctrl-O appeared twice. The first pre-acceptance full serial run is retained as `pre-acceptance-full-serial.log` in that directory. It exposed one stale footer assertion for the removed hardcoded `j/k` hint. The assertion now checks the live per-command aliases. The nested ambient-history sentinel reported the same failed child, not a separate production failure.
+
+| Repair validation | Result |
+| --- | --- |
+| `cargo test --offline keymap::tests -- --test-threads=1` | 10 passed |
+| `cargo test --offline picker::input::tests -- --test-threads=1` | 14 passed |
+| `cargo test --offline config::tests -- --test-threads=1` | 24 passed |
+| `cargo test --offline tui::tests -- --test-threads=1` | 55 passed |
+| `cargo test --offline -- --test-threads=1` | 294 passed, 1 existing ignored control |
+| One default-parallel `cargo test --offline` sample | 294 passed, 1 existing ignored control |
+| `cargo fmt --all -- --check`, `cargo check --offline` | Passed |
+| `cargo clippy --offline --all-targets -- -D warnings` | Passed |
+| `cargo build --offline --release` | Passed, build only |
+| `git diff --check` | Passed |
+
+All accepted command logs are under `/tmp/n10-registry-repair-x0LsFZ`. Its `start` directory records HEAD `4e98955fec73caa0cfc7bf15305a6525e60a0f52`, starting status, the complete tracked diff, and starting hashes. Final scoped diffs and hashes are recorded beside those logs after this task record. No new repository file or dependency was added. Exact modifier matching from specification finding 1 remains intact.
+
+Standards findings 3 and 4 and specification findings 2 and 3 remain pending. Both review axes remain FAIL until independent recheck. This repair does not change host-prefix behavior, F5/F8 availability or reservation policy, the parser/host matrix, the lost Alt-J/Alt-K matrix, or the changelog. No delegation, network, SSH, live Herdr, private-state access, download, commit, merge, push, branch cleanup, N11, or N15 work ran.
+
+### Host-prefix dispatch and Help repair
+
+Specification finding 2 is repaired pending independent recheck. `Config::load` discovers Herdr's Ctrl prefix once and stores its normalized ASCII lowercase character in skipped runtime metadata on `PickerConfig`. The metadata is stored before filter-remap early returns. TOML cannot set it, clones retain it, and separate config instances retain separate prefixes.
+
+The shared key registry now compares each parsed key against that optional prefix with exact `CONTROL` modifiers and a canonical character. It removes only conflicting `FocusCycle`, `Collapse`, `Expand`, and `TechnicalDetails` bindings. Resolve, the reducer, footer, and Help therefore consume the same filtered bindings. The base registry is unchanged. Custom filters, Ctrl-C, Ctrl-O, and the directory-template command keep their dispatch and warning policy. F5 and F8 behavior is unchanged.
+
+The semantic pre-fix runs are under `/tmp/n10-hostprefix-repair-1789170664`. `red-config-dispatch.log` resolved uppercase-configured Ctrl-G to `FocusCycle`. `red-reducer-all-four.log` records the resulting focus mutation, and `red-tui-dispatch-help.log` records the production adapter moving focus from Query to Browse. The earlier `red-host-prefix-config.log` stopped first on the missing normalized warning. No compile failure was used as red evidence.
+
+| Repair validation | Result |
+| --- | --- |
+| `cargo test --offline config::tests -- --test-threads=1` | 26 passed |
+| `cargo test --offline keymap::tests -- --test-threads=1` | 12 passed |
+| `cargo test --offline picker::input::tests -- --test-threads=1` | 15 passed |
+| `cargo test --offline tui::tests -- --test-threads=1` | 56 passed |
+| `cargo test --offline -- --test-threads=1` | 300 passed, 1 existing ignored control |
+| `cargo test --offline` | 300 passed, 1 existing ignored control |
+| `cargo fmt --all -- --check`, `cargo check --offline` | Passed |
+| `cargo clippy --offline --all-targets -- -D warnings` | Passed |
+| `cargo build --offline --release` | Passed, build only |
+| `git diff --check` | Passed |
+
+All commands used a fresh copy of the fail-closed isolation runner with temporary HOME, XDG and TMPDIR directories and 240-second outer bounds. The runner blocked Herdr, Herdr Plus, SSH and download tools and removed every isolation directory. The first grouped focused-config command did not start Cargo tests because Cargo accepts one test filter; `accepted-config.log` is the corrected full config suite. The pre-format check reported only the new test formatting, then `format-repair.log` applied rustfmt and `accepted-fmt.log` passed. Hash comparison with the repair-start snapshot reports changes only in `src/config.rs`, `src/keymap.rs`, `src/picker/input/tests.rs`, test code in `src/tui.rs`, and this task record. No failure is omitted from this record.
+
+Only specification finding 2 is marked repaired here. Standards findings 3 and 4 and specification finding 3 remain pending. Standards findings 1 and 2 and specification findings 1 and 4 still await independent recheck. Both review axes remain FAIL until the remaining findings are repaired and all findings are rechecked. No F5/F8 policy, parser/host matrix, Alt-J/Alt-K matrix, changelog, N11, N15, ownership, route, filter, template, live transport, or private state work ran. No delegation, network, SSH, download, commit, merge, push, or branch cleanup ran.
+
+### Stable reservation repair
+
+Specification finding 3 is repaired pending independent recheck. A private admission pass now decides whether each configured merged command may enter the registry. It compares candidates against the complete legacy command catalog with template, update, and close keys present. Runtime dispatch still adds those three commands only when the caller reports them available. A valid directory-template key remains reserved when `directory_template` is absent.
+
+The configured Refresh key rejects `FocusCycle`, `Collapse`, `Expand`, and `TechnicalDetails` on an exact code and modifier match. This does not depend on focus, presentation, Vim state, menu state, runtime availability, or whether Refresh itself collides with an older command. Refresh remains unimplemented and never enters dispatch, Help, or footer hints. Host-prefix rejection stays separate, and a rejected candidate cannot claim precedence over a later candidate. Query Left and Browse Left retain their disjoint scopes.
+
+Config diagnostics consume the same admission decisions. They name the normalized key and winning setting. Existing focus/Refresh and collapse/filter fixture diagnostics remain present. Refresh diagnostics state that N15 owns the command. In-memory config tests get the same four reservation diagnostics with and without a configured template file.
+
+The reducer tests use real disclosure rows and full state snapshots. Unavailable F5, Alt-Enter, Ctrl-X, and F8 do nothing for each of the four merged command fields. Flipping update, template, or close availability false, true, then false changes only the legacy owner command. The template path returns the selected identity and Template slot without executing it. Menu and Help remain closed to conditional owner commands. The TUI test checks saved Browse and menu Help contexts, all four merged labels, runtime update and template owners, absent close availability, and the lack of any Refresh hint.
+
+Pre-fix runs are under `/tmp/n10-spec3-reservation-Jtdrgy`. `red-conditional-all.log` lists all 12 leaks across F5, Alt-Enter, and Ctrl-X. `red-refresh-all.log` lists the non-focus F8 leaks, configured Ctrl-G and Left leaks, and the case where Refresh also collides with F5. `red-keymap-reservations.log` is the first semantic run. The directory also retains the admission-helper compile correction, the disclosure fixture correction, and the TUI width correction. No production failure was hidden by those test fixes.
+
+The temporary pre-fix tree mistakenly shared the main Cargo target directory. Its old test binary caused `final-keymap.log` to repeat the expected red failures after the temporary tree was removed. Touching the current `src/keymap.rs` forced Cargo to rebuild from the working tree. `final-keymap-rebuilt.log` then passed all 18 tests. Later final suites use that rebuilt binary.
+
+| Repair validation | Result |
+| --- | --- |
+| `cargo test --offline keymap::tests -- --test-threads=1` | 18 passed |
+| `cargo test --offline config::tests -- --test-threads=1` | 27 passed |
+| `cargo test --offline picker::input::tests -- --test-threads=1` | 17 passed |
+| Exact specification 3 TUI Help and dispatch test | 1 passed |
+| `cargo test --offline -- --test-threads=1` | 310 passed, 1 existing ignored control |
+| `cargo test --offline` | 310 passed, 1 existing ignored control |
+| `cargo fmt --all -- --check` | Passed |
+| `cargo check --offline --all-targets` | Passed |
+| `cargo clippy --offline --all-targets -- -D warnings` | Passed |
+| `cargo build --offline --release` | Passed, build only |
+| `git diff --check` | Passed |
+
+All accepted commands used a fresh copy of the fail-closed isolation runner. Each command had a 240-second outer bound, temporary HOME, XDG and TMPDIR directories, offline Cargo, and blocked Herdr, Herdr Plus, SSH and download commands. The runner removed every isolation directory and found no leftover TUI fixture. The fix-start snapshot records checkpoint `4e98955fec73caa0cfc7bf15305a6525e60a0f52` and the earlier uncommitted work.
+
+Only specification finding 3 is marked repaired here. Standards findings 3 and 4 remain pending. All earlier repairs still await independent recheck, so both review axes remain FAIL. No parser or fixture matrix, Alt-J/Alt-K matrix, changelog, Refresh command, N11, N15, production config, dependency, transport, live operation, commit, merge, push, or branch cleanup changed.
+
+### Standards 3 coverage repair
+
+Standards finding 3 is repaired pending independent recheck. `configured_key_grammar_preserves_aliases_and_setting_limits` runs the configured-key grammar through parsed config, production resolution, effective bindings, and diagnostics. It covers the four Ctrl-A spellings, four Alt-Enter spellings, padded F1 through F12, all arrow names, and seven invalid merged spellings. The test keeps the default Agent filter out of the Ctrl-A positive case, proves Alt-Enter remains the template owner, checks F5 Update and the F8 reservation, and checks the exact three-diagnostic order for invalid template, focus, and refresh settings. An invalid Project filter retains the default Ctrl-P binding.
+
+`collision_fixture_dispatch_matches_effective_bindings` parses the unchanged `binding-collisions.toml` fixture. In actual legacy and merged contexts, and in Vim Normal and Search, it checks Ctrl-C Back plus the explicit Ctrl-P/U/X/B/O/J filter winners. Each key has exactly one effective owner. Plain j moves down only in Normal.
+
+Existing tests now cover the missing matrix rows instead of adding copies of already retained cases. `legacy_keys_and_conditional_actions_keep_precedence` checks Ctrl-P/R/S/O, Tab, Enter, conditional F5, and conditional Alt-Enter in both Vim states. `merged_keys_are_active_only_in_actual_merged_context` varies the requested presentation and runtime availability while an actual legacy context keeps F6/F8 and merged hints inactive. `vim_commands_have_normal_scope` covers j/k, Alt-J/K in both Vim states, and Ctrl-K filter diagnostics with Vim enabled and disabled. The reservation diagnostic test names normalized F5 and Update. The host-prefix test combines a Ctrl-G template with `^g` focus and `CTRL+G` refresh, checks host diagnostic order, and proves the template command remains the sole effective owner.
+
+The existing TUI regression now starts with Vim enabled in Normal, enters Search with `/`, types `a`, and confirms two filtered rows. Alt-J and Alt-K move selection while query text, cursor, Query focus, and Search state stay unchanged. This uses `App::for_test`; it reads no ambient config or history and makes no live call. The fixture README names the pure keymap tests separately from this production event-handler test. It also records N10 input as complete and N11 visual work as pending.
+
+All acceptance commands used the copied fail-closed runner at `/tmp/n10-standards3-xFN5mS/run.py`. Each command had a 240-second outer limit and a 230-second child limit. The runner used temporary HOME, XDG, and TMPDIR directories, offline Cargo, blocked Herdr, Herdr Plus, SSH, SCP, curl, wget, and zoxide, and removed each isolation directory.
+
+| Validation | Log | Result |
+| --- | --- | --- |
+| `cargo test --offline keymap::tests -- --test-threads=1` | `keymap-final.log` | 20 passed |
+| `cargo test --offline config::tests -- --test-threads=1` | `config.log` | 27 passed |
+| Exact `tui::tests::alt_j_and_alt_k_move_selection_while_searching` | `tui-alt-jk.log` | 1 passed |
+| `cargo test --offline -- --test-threads=1` | `full-serial-final.log` | 312 passed, 1 existing ignored control |
+| `cargo test --offline` | `full-parallel-final.log` | 312 passed, 1 existing ignored control |
+| `cargo fmt --all -- --check` | `final-fmt.log` | Passed |
+| `cargo check --offline --all-targets` | `final-check.log` | Passed |
+| `cargo clippy --offline --all-targets -- -D warnings` | `final-clippy.log` | Passed |
+| `cargo build --offline --release` | `final-release.log` | Passed, build only |
+| `git diff --check` | `final-diff-after-record.log` | Passed |
+
+The first strict Clippy run, `clippy.log`, rejected one unnecessary test clone. The assertion now uses `std::slice::from_ref`; focused and full suites pass afterward. No production defect appeared. Fix-start status, diff, hashes, and production-section copies are under `/tmp/n10-standards3-xFN5mS/start`.
+
+The repair changes only test code in `src/keymap.rs`, the named test in `src/tui.rs`, `tests/fixtures/config/README.md`, and this task record relative to fix-start. `src/config.rs`, fixture inputs, dependencies, production Rust sections, and raw help captures remain byte-identical. No new file was added. No changelog was edited because Standards finding 4 remains pending. Standards 3 is repaired pending independent review. Standards 4 remains pending, and both review axes remain FAIL until fresh rechecks. No delegation, download, private-state access, live Herdr, network, SSH, commit, merge, push, branch cleanup, N11, or N15 work ran.
+
+### Standards 4 changelog repair
+
+Standards finding 4 is repaired pending independent recheck. The Unreleased Added section now records the production legacy picker's cursor insertion, Unicode scalar boundary movement and deletion, active Help bindings, and layered Esc behavior. It also states that merged picker rendering remains unavailable. These notes match the README keyboard workflow and the reducer behavior.
+
+Fix-start copies and hashes of both authorized files are under `/tmp/herdr-standards4-docs-NAvMtr`. This repair changes only `CHANGELOG.md` and this task record relative to that snapshot. `git diff --check -- CHANGELOG.md tasks/todo.md` and the scope hash comparison passed. The 312 serial and 312 parallel tests with one existing ignored control are the prior Standards 3 results; no test suite was rerun for this docs-only repair.
+
+Fresh Standards and specification reviews are next. Both review axes remain FAIL, and all further write integration, including commit, merge, push, and branch cleanup, stays blocked until both return PASS. No source, config, fixture, test, or dependency changed. No delegation, download, private-state access, live Herdr, network, SSH, commit, merge, push, cleanup, N11, or N15 work ran.
+
+### Help clipping review repair
+
+The latest Standards Help-clipping finding is repaired pending fresh Standards and specification reviews. The Help renderer now computes each column's key-cell width with Ratatui terminal-cell measurement instead of Rust format width. It uses a two-cell indent and one-cell separator, wraps descriptions into the remaining cells, aligns continuation rows under the description, and counts those physical rows when sizing the popup. The existing two column groups and height cap remain unchanged. Zero-width descriptions return one bounded row, while narrow positive widths split long words without an unbounded loop.
+
+`help_conditional_actions_are_complete_at_80x30` opens Help through the production event handler without activating an entry. Its in-memory Project fixture covers default and `option+enter` template spellings, legacy Query behavior, Vim Normal and Search aliases, and all independent template/update availability combinations at 80 by 30. It compares every effective binding from the shared registry with the correct rendered column, reconstructs wrapped descriptions only from consecutive rows in that column, checks all headings and six query-editing descriptions, verifies the final filter and bottom border, and rejects unavailable conditional labels. It also checks the Ratatui cell widths of `⌥↵` and `↑/⌥K/k` and bounded wrapping at widths zero and one.
+
+The first red command found a test format-string compile error, and the second found an incorrect test assumption that disabled Vim starts in Search. After those test-only corrections, `red-help-80x30-semantic-2.log` captured the production defect: the `⌥↵` row ended at `open selected with dir` and omitted `directory template`. The first two post-implementation focused runs corrected test inspection errors. One searched for the unbroken conditional label after wrapping, and one matched `/` inside `back / close` instead of the Search key row. The corrected focused test and all suites pass.
+
+All commands used the copied fail-closed runner at `/tmp/n10-help-clipping-1789174956/run.py`. Each command had a 240-second outer limit and a 230-second child limit. The runner used temporary HOME, XDG, and TMPDIR directories, offline Cargo, blocked Herdr, Herdr Plus, SSH, SCP, curl, wget, and zoxide, and removed every isolation directory.
+
+| Validation | Log | Result |
+| --- | --- | --- |
+| Exact `tui::tests::help_conditional_actions_are_complete_at_80x30` | `focused-help-green-3.log` | 1 passed |
+| `cargo test --offline tui::tests -- --test-threads=1` | `tui-suite.log` | 58 passed |
+| `cargo test --offline keymap::tests -- --test-threads=1` | `keymap.log` | 20 passed |
+| `cargo test --offline -- --test-threads=1` | `full-serial.log` | 313 passed, 1 existing ignored control |
+| `cargo test --offline` | `full-parallel.log` | 313 passed, 1 existing ignored control |
+| `cargo fmt --all -- --check` | `fmt.log` | Passed |
+| `cargo check --offline --all-targets` | `check.log` | Passed |
+| `cargo clippy --offline --all-targets -- -D warnings` | `clippy.log` | Passed |
+| `cargo build --offline --release` | `release.log` | Passed, build only |
+| `git diff --check` | `final-diff.log` | Passed |
+
+The repair-start tracked diff and status are `/tmp/herdr-n10-help-repair-start.diff` and `/tmp/herdr-n10-help-repair-start.status`. Comparison against a reconstruction of that snapshot shows changes only in Help production/test sections of `src/tui.rs` and this task record. Registry labels, command dispatch, config, fixtures, dependencies, and unrelated production sections are unchanged. No new repository file was added.
+
+Only the latest Help-clipping finding is marked repaired here. Fresh Standards and specification reviews are still required, so both review axes remain FAIL. Commit, merge, push, and branch cleanup remain blocked until both reviews pass. Release gates remain separate. No delegation, download, private-state access, live Herdr, network, SSH, N11 layout work, scrolling framework, or other task ran.
+
+### N10 final independent review and integration intent
+
+Fresh Standards review `sa-4c33fa55` and specification review `sa-04a26259` both returned PASS with no issues. They reviewed the final N10 snapshot, including the Help-clipping repair, against baseline `6b5ea9e6ce81a1771db7e535fb98b1b469118c81`. These results close all eight original N10 findings and the later Help-clipping finding. Earlier FAIL results and repair evidence remain above as historical evidence.
+
+The reviewed source bytes remain unchanged after validation. The authorized integration will commit the 18 reviewed N10 paths on `feat/navigator-machine-panes`, push that branch, fast-forward `main` from the verified baseline, push `main`, then remove only the merged feature branch. This is source integration, not a release. N07 qualified live history, S01, client-authorized combined activation, live terminal and platform validation, and release qualification remain blocked. N11 and later work have not started.

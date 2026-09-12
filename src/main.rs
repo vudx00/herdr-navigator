@@ -17,7 +17,8 @@ mod navigation;
 #[path = "navigation/test_support.rs"]
 mod navigation_test_support;
 mod paths;
-// N08 compiles the pure projection before N10/N11 supply its active consumer.
+// N10 consumes the shared reducer in production. N11 will consume the merged
+// projection and the descriptor fields that are fixture-only for now.
 #[allow(dead_code)]
 mod picker;
 mod sources;

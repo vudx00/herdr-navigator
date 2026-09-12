@@ -39,6 +39,12 @@ pub(crate) struct PickerConfig {
     pub(crate) focus_cycle_key: String,
     #[serde(default = "default_refresh_key")]
     pub(crate) refresh_key: String,
+    #[serde(default = "default_collapse_key")]
+    pub(crate) collapse_key: String,
+    #[serde(default = "default_expand_key")]
+    pub(crate) expand_key: String,
+    #[serde(default = "default_technical_details_key")]
+    pub(crate) technical_details_key: String,
     #[serde(default = "yes")]
     pub(crate) reuse_existing: bool,
     #[serde(default = "yes")]
@@ -71,6 +77,8 @@ pub(crate) struct PickerConfig {
     pub(crate) vim_filter_search: bool,
     #[serde(default)]
     pub(crate) filter_keys: HashMap<String, String>,
+    #[serde(skip)]
+    pub(crate) known_host_ctrl_prefix: Option<char>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
@@ -249,6 +257,15 @@ fn default_focus_cycle_key() -> String {
 fn default_refresh_key() -> String {
     "f8".into()
 }
+fn default_collapse_key() -> String {
+    "left".into()
+}
+fn default_expand_key() -> String {
+    "right".into()
+}
+fn default_technical_details_key() -> String {
+    "f7".into()
+}
 fn default_directory_template_key() -> String {
     "alt-enter".into()
 }
@@ -294,6 +311,9 @@ impl Default for PickerConfig {
             presentation: Presentation::Legacy,
             focus_cycle_key: default_focus_cycle_key(),
             refresh_key: default_refresh_key(),
+            collapse_key: default_collapse_key(),
+            expand_key: default_expand_key(),
+            technical_details_key: default_technical_details_key(),
             reuse_existing: true,
             create_missing: true,
             engine: default_engine(),
@@ -310,6 +330,7 @@ impl Default for PickerConfig {
             vim_mode: false,
             vim_filter_search: false,
             filter_keys: HashMap::new(),
+            known_host_ctrl_prefix: None,
         }
     }
 }
@@ -578,7 +599,9 @@ impl Config {
         diagnostics
     }
 
-    fn avoid_default_prefix_conflict(&mut self, prefix: char) -> Vec<String> {
+    pub(crate) fn avoid_default_prefix_conflict(&mut self, prefix: char) -> Vec<String> {
+        let prefix = prefix.to_ascii_lowercase();
+        self.picker.known_host_ctrl_prefix = Some(prefix);
         let mut diagnostics = crate::keymap::host_prefix_diagnostics(&self.picker, prefix);
         let Some(source) = self.picker.filter_source_for_key(prefix) else {
             return diagnostics;
@@ -634,6 +657,9 @@ mod tests {
             assert_eq!(config.picker.presentation, Presentation::Legacy);
             assert!(!config.sources.panes);
             assert_eq!(config.picker.focus_cycle_key, "f6");
+            assert_eq!(config.picker.collapse_key, "left");
+            assert_eq!(config.picker.expand_key, "right");
+            assert_eq!(config.picker.technical_details_key, "f7");
             assert_eq!(config.picker.refresh_key, "f8");
             assert!(config.diagnostics().is_empty());
             assert_eq!(config.picker.filter_key(Source::Project), Some('p'));
@@ -749,6 +775,37 @@ mod tests {
     }
 
     #[test]
+    fn disabled_vim_aliases_do_not_report_impossible_collisions() {
+        let disabled: Config = toml::from_str(
+            r#"
+            [picker]
+            vim_mode = false
+            [picker.filter_keys]
+            project = "ctrl-j"
+        "#,
+        )
+        .unwrap();
+        assert!(!disabled
+            .diagnostics()
+            .iter()
+            .any(|line| line.contains("j [vim Normal]")));
+
+        let enabled: Config = toml::from_str(
+            r#"
+            [picker]
+            vim_mode = true
+            [picker.filter_keys]
+            project = "ctrl-j"
+        "#,
+        )
+        .unwrap();
+        assert!(enabled
+            .diagnostics()
+            .iter()
+            .any(|line| { line.contains("j [vim Normal]") && line.contains("legacy MoveDown") }));
+    }
+
+    #[test]
     fn collision_fixture_is_independent_of_hashmap_insertion_order() {
         let original: Config = toml::from_str(include_str!(
             "../tests/fixtures/config/binding-collisions.toml"
@@ -806,10 +863,42 @@ mod tests {
             "legacy ToggleMark: ctrl-b conflicts with picker.filter_keys.open",
             "legacy TogglePreview: ctrl-o conflicts with picker.filter_keys.server",
             "picker.directory_template_key [when template available]: ctrl-p conflicts with picker.filter_keys.project",
-            "picker.focus_cycle_key: ctrl-p conflicts with picker.filter_keys.project",
-            "picker.refresh_key: ctrl-p conflicts with picker.focus_cycle_key",
+            "picker.focus_cycle_key: ctrl-p conflicts with picker.refresh_key; both bindings inactive",
+            "picker.refresh_key: ctrl-p conflicts with picker.filter_keys.project",
+            "picker.collapse_key: ctrl-p conflicts with picker.filter_keys.project",
+            "picker.expand_key: ctrl-o conflicts with picker.filter_keys.server",
+            "picker.technical_details_key: ctrl-o conflicts with picker.filter_keys.server",
         ] {
             assert!(diagnostics.iter().any(|line| line.contains(fragment)), "missing {fragment}: {diagnostics:#?}");
+        }
+    }
+
+    #[test]
+    fn spec3_reserved_key_diagnostics_are_stable_without_a_runtime_template() {
+        let mut absent = Config::default();
+        absent.picker.focus_cycle_key = "F5".into();
+        absent.picker.collapse_key = "F8".into();
+        absent.picker.expand_key = "option+enter".into();
+        absent.picker.technical_details_key = "CTRL+X".into();
+        let absent_diagnostics = absent.diagnostics();
+
+        let mut present = absent.clone();
+        present.picker.directory_template = Some("default.toml".into());
+        let present_diagnostics = present.diagnostics();
+        assert_eq!(absent_diagnostics, present_diagnostics);
+
+        for fragment in [
+            "picker.focus_cycle_key: f5 conflicts with legacy Update [when update available]",
+            "picker.collapse_key: f8 conflicts with picker.refresh_key",
+            "picker.expand_key: alt-enter conflicts with picker.directory_template_key [when template available]",
+            "picker.technical_details_key: ctrl-x conflicts with legacy CloseWorkspace",
+        ] {
+            assert!(
+                absent_diagnostics
+                    .iter()
+                    .any(|line| line.contains(fragment) && line.contains("inactive")),
+                "missing {fragment}: {absent_diagnostics:#?}"
+            );
         }
     }
 
@@ -842,6 +931,67 @@ mod tests {
         // Sorted original config names win, not Source::all registry order.
         assert_eq!(picker.filter_source_for_key('g'), Some(Source::Agent));
         assert_eq!(picker.filter_key(Source::Project), None);
+    }
+
+    #[test]
+    fn n10_host_prefix_is_normalized_and_blocks_the_conflicting_merged_binding() {
+        let mut config: Config = toml::from_str(
+            r#"
+            [picker]
+            presentation = "merged"
+            focus_cycle_key = "CTRL+G"
+            "#,
+        )
+        .unwrap();
+
+        let diagnostics = config.avoid_default_prefix_conflict('G');
+        assert_eq!(config.picker.focus_cycle_key, "CTRL+G");
+        assert_eq!(
+            crate::keymap::resolve(
+                &config.picker,
+                crate::keymap::InputContext {
+                    presentation: crate::keymap::Presentation::Merged,
+                    focus: crate::keymap::Focus::Query,
+                    vim: crate::keymap::VimState::Search,
+                    menu: false,
+                },
+                crate::keymap::Availability::default(),
+                crossterm::event::KeyEvent::new(
+                    crossterm::event::KeyCode::Char('g'),
+                    crossterm::event::KeyModifiers::CONTROL,
+                ),
+            ),
+            None
+        );
+        assert!(diagnostics.iter().any(|line| {
+            line.contains("picker.focus_cycle_key: ctrl-g conflicts with Herdr keys.prefix")
+                && line.contains("merged binding inactive")
+        }));
+    }
+
+    #[test]
+    fn host_prefix_runtime_metadata_is_skipped_cloned_and_instance_local() {
+        let forged: Config = toml::from_str(
+            r#"
+            [picker]
+            known_host_ctrl_prefix = "x"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(forged.picker.known_host_ctrl_prefix, None);
+
+        let mut first = Config::default();
+        first.avoid_default_prefix_conflict('G');
+        assert_eq!(first.picker.known_host_ctrl_prefix, Some('g'));
+        assert_eq!(
+            first.clone().picker.known_host_ctrl_prefix,
+            first.picker.known_host_ctrl_prefix
+        );
+
+        let mut second = Config::default();
+        second.avoid_default_prefix_conflict('H');
+        assert_eq!(second.picker.known_host_ctrl_prefix, Some('h'));
+        assert_eq!(first.picker.known_host_ctrl_prefix, Some('g'));
     }
 
     #[test]

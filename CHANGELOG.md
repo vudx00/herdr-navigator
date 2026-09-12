@@ -10,6 +10,12 @@ All notable changes to this project are documented here.
   This adds test coverage only, not navigation behavior.
 - Alt-J and Alt-K move down and up alongside the arrow keys, including while
   typing a search query.
+- The production legacy picker inserts text at the query cursor. Left and Right
+  move by Unicode scalar boundary, Home and End move to the query bounds, and
+  Backspace and Delete remove one scalar before or after the cursor.
+- `?` shows active keybindings, including query editing. `Esc` closes Help
+  first, then Details if open, then leaves Search before closing the picker.
+- Merged picker rendering remains unavailable.
 
 ### Fixed
 - Development picker action failures now appear inline without a blocking

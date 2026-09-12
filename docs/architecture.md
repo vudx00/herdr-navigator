@@ -40,11 +40,13 @@ src/herdr.rs     small Herdr CLI wrapper
 src/theme.rs     theme mapping and custom overrides
 src/matcher.rs   fuzzy scoring engines
 src/paths.rs     path/config helpers
+src/picker.rs    pure merged projection and search state
+src/picker/input.rs pure keyboard reducer and input-session state
 ```
 
 Keep new integrations in `sources.rs` unless they grow enough to deserve their own module. Keep Herdr CLI calls behind `herdr.rs` where practical.
 
-Picker input is an exclusive `InputMode` state machine (`Normal`, `Search`, `Help`); key scopes, footer hints, and transitions are defined through `keymap.rs`.
+`App::query` owns the query text. The TUI input session owns the cursor, focus, vim mode, Help return state, filter menu, and Details state. `picker::input::reduce` handles both the production legacy TUI and fixture-backed merged input. `keymap.rs` defines shared command dispatch, Help labels, scopes, and collision diagnostics.
 
 ## Sources
 
