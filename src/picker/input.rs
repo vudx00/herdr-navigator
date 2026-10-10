@@ -282,7 +282,7 @@ pub(crate) fn reduce(
     state.reconcile_query(query);
 
     if state.help.is_some() {
-        if event.modifiers == KeyModifiers::CONTROL && event.code == KeyCode::Char('c') {
+        if is_ctrl_c(event) {
             return vec![Effect::Quit];
         }
         if (event.code == KeyCode::Esc && event.modifiers.is_empty())
@@ -318,7 +318,7 @@ pub(crate) fn reduce(
 
     if state.menu.is_some() {
         match command {
-            Some(Command::Back) if event.code == KeyCode::Char('c') => {
+            Some(Command::Back) if back_is_quit(command.as_ref(), event) => {
                 return vec![Effect::Quit];
             }
             Some(Command::Back) => state.menu = None,
@@ -351,11 +351,7 @@ pub(crate) fn reduce(
                 if let KeyCode::Char(ch) = event.code {
                     if text_modifiers(event.modifiers) {
                         state.menu = None;
-                        state.focus = Focus::Query;
-                        state.vim = VimState::Search;
-                        insert(query, &mut state.cursor, ch);
-                        state.observe_query(query);
-                        return vec![Effect::QueryChanged];
+                        return type_char(state, query, ch);
                     }
                 }
             }
@@ -364,16 +360,12 @@ pub(crate) fn reduce(
         return Vec::new();
     }
 
-    if command == Some(Command::Back) && event.code == KeyCode::Char('c') {
+    if back_is_quit(command.as_ref(), event) {
         return vec![Effect::Quit];
     }
     if command == Some(Command::Back) {
         if state.details.visible {
-            state.details.visible = false;
-            state.details.technical = false;
-            if state.focus == Focus::Details {
-                state.focus = Focus::Query;
-            }
+            hide_details(state);
             return Vec::new();
         }
         if state.vim == VimState::Search {
@@ -432,11 +424,7 @@ pub(crate) fn reduce(
         }
         if let KeyCode::Char(ch) = event.code {
             if text_modifiers(event.modifiers) {
-                state.vim = VimState::Search;
-                state.focus = Focus::Query;
-                insert(query, &mut state.cursor, ch);
-                state.observe_query(query);
-                return vec![Effect::QueryChanged];
+                return type_char(state, query, ch);
             }
         }
         return Vec::new();
@@ -444,14 +432,62 @@ pub(crate) fn reduce(
 
     if let KeyCode::Char(ch) = event.code {
         if text_modifiers(event.modifiers) {
-            state.focus = Focus::Query;
-            state.vim = VimState::Search;
-            insert(query, &mut state.cursor, ch);
-            state.observe_query(query);
-            return vec![Effect::QueryChanged];
+            return type_char(state, query, ch);
         }
     }
     Vec::new()
+}
+
+/// Ctrl-C always quits, even while the help overlay is open.
+fn is_ctrl_c(event: KeyEvent) -> bool {
+    event.modifiers == KeyModifiers::CONTROL && event.code == KeyCode::Char('c')
+}
+
+/// `Back` resolved from a `c` chord (Ctrl-C) quits instead of backing out.
+fn back_is_quit(command: Option<&Command>, event: KeyEvent) -> bool {
+    matches!(command, Some(Command::Back)) && event.code == KeyCode::Char('c')
+}
+
+/// Typing a printable character focuses the query, enters search mode and
+/// inserts the character at the cursor.
+fn type_char(state: &mut State, query: &mut String, ch: char) -> Vec<Effect> {
+    state.focus = Focus::Query;
+    state.vim = VimState::Search;
+    insert(query, &mut state.cursor, ch);
+    state.observe_query(query);
+    vec![Effect::QueryChanged]
+}
+
+/// Hides the details pane, resets technical mode and moves focus off the
+/// (now hidden) details pane.
+fn hide_details(state: &mut State) {
+    state.details.visible = false;
+    state.details.technical = false;
+    if state.focus == Focus::Details {
+        state.focus = Focus::Query;
+    }
+}
+
+/// The provenance filter that follows `current` when cycling: unfiltered goes
+/// to the first source, each source advances in [`Source::all`] order, and the
+/// last source wraps back to unfiltered.
+pub(crate) fn next_source_filter(current: Option<Source>) -> Option<Source> {
+    let all = Source::all();
+    match current {
+        None => all.first().copied(),
+        Some(current) => all
+            .iter()
+            .position(|source| *source == current)
+            .and_then(|index| all.get(index + 1).copied()),
+    }
+}
+
+fn vim_state_after_filter(config: &PickerConfig) -> VimState {
+    if config.vim_filter_search {
+        VimState::Search
+    } else {
+        VimState::Normal
+    }
 }
 
 fn execute(
@@ -466,8 +502,8 @@ fn execute(
         Command::Back => vec![Effect::Quit],
         Command::Open => activate(context.rows, &context.actions, Slot::Primary),
         Command::OpenTemplate => activate(context.rows, &context.actions, Slot::Template),
-        Command::MoveUp => move_selection(state, picker, context.rows, -1),
-        Command::MoveDown => move_selection(state, picker, context.rows, 1),
+        Command::MoveUp => move_selection(picker, context.rows, -1),
+        Command::MoveDown => move_selection(picker, context.rows, 1),
         Command::StartSearch => {
             if state.presentation == Presentation::Legacy {
                 query.clear();
@@ -480,23 +516,7 @@ fn execute(
         }
         Command::CycleFilter => {
             if let Some(picker) = picker {
-                let all = Source::all();
-                let next = picker
-                    .filters
-                    .provenance
-                    .and_then(|current| {
-                        all.iter()
-                            .position(|source| *source == current)
-                            .and_then(|index| all.get(index + 1).copied())
-                    })
-                    .or_else(|| {
-                        picker
-                            .filters
-                            .provenance
-                            .is_none()
-                            .then_some(Source::Workspace)
-                    });
-                picker.set_provenance(next);
+                picker.set_provenance(next_source_filter(picker.filters.provenance));
                 Vec::new()
             } else {
                 vec![Effect::CycleLegacyFilter]
@@ -538,8 +558,8 @@ fn execute(
             query.clear();
             state.cursor = 0;
             state.menu = None;
-            state.details.visible = false;
-            state.details.technical = false;
+            hide_details(state);
+            // Unlike Back/ToggleDetails, Clear always returns focus to the query.
             state.focus = Focus::Query;
             state.observe_query(query);
             if state.presentation == Presentation::Merged {
@@ -556,12 +576,10 @@ fn execute(
         Command::CloseWorkspace => vec![Effect::CloseWorkspace],
         Command::ToggleMark => vec![Effect::ToggleMark],
         Command::ToggleDetails => {
-            state.details.visible = !state.details.visible;
-            if !state.details.visible {
-                state.details.technical = false;
-                if state.focus == Focus::Details {
-                    state.focus = Focus::Query;
-                }
+            if state.details.visible {
+                hide_details(state);
+            } else {
+                state.details.visible = true;
             }
             Vec::new()
         }
@@ -581,26 +599,17 @@ fn execute(
             let vim_filter = context.config.vim_mode
                 && state.vim == VimState::Normal
                 && event.modifiers == KeyModifiers::NONE;
+            if vim_filter {
+                state.vim = vim_state_after_filter(context.config);
+            }
             if let Some(picker) = picker {
                 let next = (picker.filters.provenance != Some(source)).then_some(source);
                 picker.set_provenance(next);
-                if vim_filter {
-                    state.vim = if context.config.vim_filter_search {
-                        VimState::Search
-                    } else {
-                        VimState::Normal
-                    };
-                }
                 Vec::new()
             } else {
                 if vim_filter {
                     query.clear();
                     state.cursor = 0;
-                    state.vim = if context.config.vim_filter_search {
-                        VimState::Search
-                    } else {
-                        VimState::Normal
-                    };
                     state.observe_query(query);
                 }
                 let next = (context.legacy_filter != Some(source)).then_some(source);
@@ -660,12 +669,7 @@ fn activate(rows: &Rows, actions: &ActionAvailability, slot: Slot) -> Vec<Effect
     }
 }
 
-fn move_selection(
-    state: &State,
-    picker: Option<&mut PickerState>,
-    rows: &Rows,
-    delta: i8,
-) -> Vec<Effect> {
+fn move_selection(picker: Option<&mut PickerState>, rows: &Rows, delta: i8) -> Vec<Effect> {
     let Some(picker) = picker else {
         return vec![Effect::MoveLegacy(delta)];
     };
@@ -683,10 +687,6 @@ fn move_selection(
         (None, false) => 0,
     };
     set_selection(picker, rows.flat, rows.rows[index].id.clone());
-    debug_assert!(matches!(
-        state.focus,
-        Focus::Query | Focus::Browse | Focus::MachineFilter | Focus::TypeFilter | Focus::Details
-    ));
     Vec::new()
 }
 

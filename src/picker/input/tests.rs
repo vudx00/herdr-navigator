@@ -505,6 +505,59 @@ fn provenance_shortcuts_and_full_reset_preserve_or_clear_the_right_state() {
 }
 
 #[test]
+fn next_source_filter_starts_at_first_source_advances_in_order_and_wraps_to_none() {
+    let all = Source::all();
+    assert_eq!(next_source_filter(None), Some(all[0]));
+    assert_eq!(next_source_filter(None), Some(Source::Workspace));
+    for pair in all.windows(2) {
+        assert_eq!(next_source_filter(Some(pair[0])), Some(pair[1]));
+    }
+    assert_eq!(next_source_filter(all.last().copied()), None);
+}
+
+#[test]
+fn cycle_filter_steps_merged_provenance_and_keeps_query_and_other_filters() {
+    let mut harness = Harness::new();
+    harness.query = "void".into();
+    harness.state.reconcile_query(&harness.query);
+    harness.picker.set_type(TypeFilter::Sessions);
+    let mut seen = Vec::new();
+    for _ in 0..=Source::all().len() {
+        assert!(harness.press(key(KeyCode::Tab)).is_empty());
+        seen.push(harness.picker.filters.provenance);
+        assert_eq!(harness.query, "void");
+        assert_eq!(harness.picker.filters.kind, TypeFilter::Sessions);
+    }
+    let mut expected: Vec<_> = Source::all().into_iter().map(Some).collect();
+    expected.push(None);
+    assert_eq!(seen, expected);
+}
+
+#[test]
+fn cycle_filter_without_picker_defers_to_legacy_cycling() {
+    let config = PickerConfig::default();
+    let mut state = State::legacy(&config, "");
+    let mut query = String::new();
+    let rows = Rows::default();
+    let effects = reduce(
+        &mut state,
+        &mut query,
+        None,
+        key(KeyCode::Tab),
+        Context {
+            config: &config,
+            visible: VisibleRegions::legacy(false),
+            rows: &rows,
+            actions: ActionAvailability::default(),
+            legacy_filter: None,
+            machine_options: &[],
+        },
+    );
+    assert_eq!(effects, [Effect::CycleLegacyFilter]);
+    assert!(query.is_empty());
+}
+
+#[test]
 fn vim_merged_preserves_slash_query_and_legacy_keeps_clear_and_normal_rules() {
     let mut harness = Harness::new();
     harness.config.vim_mode = true;

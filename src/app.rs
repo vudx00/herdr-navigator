@@ -523,14 +523,7 @@ impl App {
     }
 
     pub(crate) fn cycle_filter(&mut self) {
-        self.source_filter = match &self.source_filter {
-            None => Some(Source::Workspace),
-            Some(cur) => {
-                let all = Source::all();
-                let pos = all.iter().position(|s| s == cur).unwrap_or(0);
-                all.get(pos + 1).copied()
-            }
-        };
+        self.source_filter = crate::picker::input::next_source_filter(self.source_filter);
         self.selected = 0;
         self.apply_filter();
     }
@@ -2283,6 +2276,27 @@ exit {exit_code}
             app.selected_entry().unwrap().workspace_id.as_deref(),
             Some("w1")
         );
+    }
+
+    #[test]
+    fn cycle_filter_walks_every_source_then_clears_and_resets_selection() {
+        let mut app = test_app(Config::default(), Theme::load(false));
+        app.entries = vec![
+            entry(Source::Workspace, "/alpha", "alpha"),
+            entry(Source::Workspace, "/beta", "beta"),
+        ];
+        app.apply_filter();
+        let mut seen = Vec::new();
+        for _ in 0..=Source::all().len() {
+            app.selected = 1;
+            app.cycle_filter();
+            assert_eq!(app.selected, 0);
+            seen.push(app.source_filter);
+        }
+        let mut expected: Vec<_> = Source::all().into_iter().map(Some).collect();
+        expected.push(None);
+        assert_eq!(seen, expected);
+        assert_eq!(app.filtered.len(), 2);
     }
 
     #[test]
