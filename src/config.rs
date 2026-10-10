@@ -1,4 +1,4 @@
-use std::{collections::HashMap, env, fs, path::PathBuf};
+use std::{collections::HashMap, fs};
 
 use serde::Deserialize;
 
@@ -31,7 +31,7 @@ pub(crate) struct Config {
     pub(crate) agent_aliases: Vec<AgentAliasConfig>,
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Deserialize, PartialEq)]
 pub(crate) struct PickerConfig {
     #[serde(default)]
     pub(crate) presentation: Presentation,
@@ -632,11 +632,7 @@ impl Config {
 }
 
 fn herdr_ctrl_prefix() -> Option<char> {
-    let path = env::var("XDG_CONFIG_HOME")
-        .map(|root| PathBuf::from(root).join("herdr/config.toml"))
-        .unwrap_or_else(|_| crate::paths::home().join(".config/herdr/config.toml"));
-    let source = fs::read_to_string(path).ok()?;
-    let value: toml::Value = toml::from_str(&source).ok()?;
+    let value = crate::paths::herdr_config()?;
     let prefix = value.get("keys")?.get("prefix")?.as_str()?;
     parse_ctrl_key(prefix)
 }
