@@ -65,7 +65,7 @@ herdr server reload-config
   <img src="docs/assets/herdr-navigator-demo.gif" alt="Herdr Navigator switching, filtering, and opening workspaces, agents, sessions, and directories" width="100%" />
 </p>
 
-*Source-aware rows keep live status, tabs, and panes aligned at a glance. [Watch the full 17-second demo.](https://github.com/thanhdat77/herdr-navigator/releases/download/v0.3.2/herdr-navigator-v0.3.2-demo.mp4)*
+*Source-aware rows keep live status, tabs, and panes aligned at a glance.*
 
 A single result list can move between live Herdr state and things that are not open yet:
 
@@ -363,3 +363,7 @@ find ~/.config/herdr/plugins/config/cloudmanic.herdr-plus/projects -name '*.toml
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — development workflow
 
 Herdr Navigator is intentionally small: reuse Herdr primitives, keep optional integrations optional, and make the common path `prefix+t → type → Enter`.
+
+## Origins
+
+This project was originally forked from [thanhdat77/herdr-navigator](https://github.com/thanhdat77/herdr-navigator) and is now developed independently. It does not track or sync with the original repository.
