@@ -572,7 +572,12 @@ mod disk {
             }
             Ok(Some(bytes))
         }
-        pub(super) fn replace(&self, bytes: &[u8], fault: Fault) -> Result<(), Error> {
+        pub(super) fn replace(
+            &self,
+            bytes: &[u8],
+            // Only test builds inject faults; production always passes `Fault::None`.
+            #[cfg_attr(not(test), allow(unused_variables))] fault: Fault,
+        ) -> Result<(), Error> {
             let temp = name(&format!(".navigation-history-{}.tmp", random_id()?))?;
             let mut file = openat(
                 &self.0,
@@ -587,7 +592,6 @@ mod disk {
                 if fault == Fault::BeforeRename {
                     return Err(invalid("injected before rename"));
                 }
-                let _ = fault;
                 if unsafe {
                     libc::renameat(
                         self.0.as_raw_fd(),

@@ -1,5 +1,8 @@
 //! Ordinary server acknowledgements do not describe an invoking client's selection.
-use std::{sync::Mutex, time::Instant};
+use std::{
+    sync::{Mutex, MutexGuard},
+    time::Instant,
+};
 
 use serde::{de::DeserializeOwned, Deserialize};
 
@@ -64,10 +67,7 @@ impl OrdinaryServer {
     }
     fn record_mutation_failure(&self, error: TransportError) -> String {
         let text = error.to_string();
-        *self
-            .mutation_failure
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = Some(error);
+        *lock(&self.mutation_failure) = Some(error);
         text
     }
     fn mutation<const N: usize>(&self, args: [&str; N]) -> Result<Vec<u8>, String> {
@@ -76,10 +76,7 @@ impl OrdinaryServer {
             .map_err(|error| self.record_mutation_failure(error))
     }
     pub(crate) fn take_mutation_failure(&self) -> Option<TransportError> {
-        self.mutation_failure
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .take()
+        lock(&self.mutation_failure).take()
     }
     pub(crate) fn notify(
         &self,
@@ -115,14 +112,8 @@ impl OrdinaryServer {
         self.route.managed_plugin
     }
     pub(crate) fn invalidate(&self) {
-        *self
-            .observed_version
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = None;
-        *self
-            .focus_capabilities
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = [Capability::Unknown; 3];
+        *lock(&self.observed_version) = None;
+        *lock(&self.focus_capabilities) = [Capability::Unknown; 3];
     }
     pub(crate) fn focus_unavailable(&self, kind: ObjectKind) -> Option<&'static str> {
         if self.route.socket.is_none() {
@@ -133,9 +124,7 @@ impl OrdinaryServer {
     }
 
     pub(crate) fn capability(&self, kind: ObjectKind) -> Capability {
-        self.focus_capabilities
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())[kind_index(kind)]
+        lock(&self.focus_capabilities)[kind_index(kind)]
     }
     pub(crate) fn workspaces(&self) -> Result<Vec<WorkspaceRecord>, TransportError> {
         self.list("workspace", "workspaces")
@@ -187,69 +176,7 @@ impl OrdinaryServer {
         let kind = target.identity().kind();
         let deadline = Instant::now() + self.limits.deadline;
         if self.capability(kind) != Capability::Rejected {
-            // A fresh connection may reach a replaced server. Recheck metadata
-            // before each mutation even while prior observations remain useful.
-            {
-                let mut capabilities = self
-                    .focus_capabilities
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner());
-                for capability in capabilities.iter_mut() {
-                    if *capability == Capability::Supported {
-                        *capability = Capability::Unknown;
-                    }
-                }
-            }
-            // Read-only negotiation, never a mutation probe. Version/protocol
-            // enables documented operations, not identity or client authority.
-            let snapshot = self
-                .request(
-                    "session.snapshot",
-                    json!({}),
-                    "session_snapshot",
-                    self.limits.stdout,
-                    deadline,
-                )
-                .map_err(|mut error| {
-                    error.outcome = MutationOutcome::NotSent;
-                    error
-                })?;
-            let snapshot = &snapshot["result"]["snapshot"];
-            validate_snapshot(snapshot).map_err(|mut error| {
-                error.outcome = MutationOutcome::NotSent;
-                error
-            })?;
-            let version = (
-                snapshot["version"]
-                    .as_str()
-                    .ok_or_else(malformed)?
-                    .to_owned(),
-                snapshot["protocol"].as_u64().ok_or_else(malformed)?,
-            );
-            {
-                let mut observed = self
-                    .observed_version
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner());
-                if observed.as_ref().is_some_and(|old| old != &version) {
-                    return Err(TransportError::new(
-                        Failure::ServerChanged,
-                        MutationOutcome::NotSent,
-                    ));
-                }
-                *observed = Some(version);
-            }
-            if snapshot["version"] == "0.9.0" && snapshot["protocol"] == 22 {
-                let mut capabilities = self
-                    .focus_capabilities
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner());
-                for capability in capabilities.iter_mut() {
-                    if *capability == Capability::Unknown {
-                        *capability = Capability::Supported;
-                    }
-                }
-            }
+            self.negotiate_capabilities(deadline)?;
         }
         if self.capability(kind) != Capability::Supported {
             return Err(TransportError::new(
@@ -257,6 +184,69 @@ impl OrdinaryServer {
                 MutationOutcome::NotSent,
             ));
         }
+        self.dispatch_focus(target, deadline)
+    }
+    /// Re-reads server metadata before each focus mutation and refreshes the
+    /// focus capability observations from it.
+    fn negotiate_capabilities(&self, deadline: Instant) -> Result<(), TransportError> {
+        // A fresh connection may reach a replaced server. Recheck metadata
+        // before each mutation even while prior observations remain useful.
+        self.downgrade_supported_capabilities();
+        let snapshot = self.session_snapshot(deadline)?;
+        let version = (
+            snapshot["version"]
+                .as_str()
+                .ok_or_else(malformed)?
+                .to_owned(),
+            snapshot["protocol"].as_u64().ok_or_else(malformed)?,
+        );
+        self.pin_version(version)?;
+        if snapshot["version"] == "0.9.0" && snapshot["protocol"] == 22 {
+            for capability in lock(&self.focus_capabilities).iter_mut() {
+                if *capability == Capability::Unknown {
+                    *capability = Capability::Supported;
+                }
+            }
+        }
+        Ok(())
+    }
+    fn downgrade_supported_capabilities(&self) {
+        for capability in lock(&self.focus_capabilities).iter_mut() {
+            if *capability == Capability::Supported {
+                *capability = Capability::Unknown;
+            }
+        }
+    }
+    /// Read-only negotiation, never a mutation probe. Version/protocol enables
+    /// documented operations, not identity or client authority.
+    fn session_snapshot(&self, deadline: Instant) -> Result<Value, TransportError> {
+        let response = self
+            .request(
+                "session.snapshot",
+                json!({}),
+                "session_snapshot",
+                self.limits.stdout,
+                deadline,
+            )
+            .map_err(not_sent)?;
+        let snapshot = response["result"]["snapshot"].clone();
+        validate_snapshot(&snapshot).map_err(not_sent)?;
+        Ok(snapshot)
+    }
+    /// Rejects a server whose version/protocol differs from the first one observed.
+    fn pin_version(&self, version: (String, u64)) -> Result<(), TransportError> {
+        let mut observed = lock(&self.observed_version);
+        if observed.as_ref().is_some_and(|old| old != &version) {
+            return Err(TransportError::new(
+                Failure::ServerChanged,
+                MutationOutcome::NotSent,
+            ));
+        }
+        *observed = Some(version);
+        Ok(())
+    }
+    fn dispatch_focus(&self, target: &LiveTarget, deadline: Instant) -> Result<(), TransportError> {
+        let kind = target.identity().kind();
         let (method, field) = match kind {
             ObjectKind::Workspace => ("workspace.focus", "workspace_id"),
             ObjectKind::Tab => ("tab.focus", "tab_id"),
@@ -280,9 +270,7 @@ impl OrdinaryServer {
                 code.as_str(),
                 "unknown_method" | "unsupported_method" | "method_not_found"
             ) {
-                self.focus_capabilities
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())[kind_index(kind)] = Capability::Rejected;
+                lock(&self.focus_capabilities)[kind_index(kind)] = Capability::Rejected;
             }
         }
         result.map(|_| ())
@@ -329,6 +317,14 @@ fn kind_index(kind: ObjectKind) -> usize {
         ObjectKind::Tab => 1,
         ObjectKind::Pane => 2,
     }
+}
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|e| e.into_inner())
+}
+/// Negotiation failures happen before any mutation is written.
+fn not_sent(mut error: TransportError) -> TransportError {
+    error.outcome = MutationOutcome::NotSent;
+    error
 }
 fn malformed() -> TransportError {
     TransportError::new(Failure::Malformed, MutationOutcome::Unknown)
