@@ -769,6 +769,9 @@ fn agent_status_color(theme: &Theme, status: &str) -> Color {
     }
 }
 
+/// Workspace titles are live Herdr labels. Navigator no longer writes `dir: `
+/// labels, but workspaces created by older versions keep them (and
+/// `workspace_kind` still recognises them), so the prefix is still stripped.
 fn display_title(entry: &Entry) -> &str {
     if entry.destination_kind() == crate::model::DestinationKind::Workspace {
         entry
@@ -903,6 +906,26 @@ fn entry_branch(app: &App, entry: &Entry, group_end: bool) -> (&'static str, Col
     }
 }
 
+/// Status glyph and color shared by the detailed and compact row layouts.
+struct RowStatus<'a> {
+    text: Option<&'a str>,
+    icon: String,
+    color: Color,
+}
+
+fn row_status<'a>(app: &App, e: &'a Entry, fallback: Color) -> RowStatus<'a> {
+    let text = entry_status(e);
+    RowStatus {
+        text,
+        icon: text
+            .map(|status| format!("{} ", status_icon_at(&e.source, status, app.spinner_tick)))
+            .unwrap_or_default(),
+        color: text
+            .map(|status| agent_status_color(&app.theme, status))
+            .unwrap_or(fallback),
+    }
+}
+
 fn draw_list(f: &mut Frame, app: &App, area: Rect) {
     let show_scores = !app.query.trim().is_empty();
     let row_width = area.width.saturating_sub(3) as usize;
@@ -926,158 +949,17 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
             selected_row = Some(items.len());
         }
         let (branch, branch_color) = entry_branch(app, e, group_end);
-        let score = show_scores
-            .then(|| app.filtered_scores.get(row).map(|s| format!("score {s}")))
-            .flatten();
+        let status = row_status(app, e, color);
+        let branch = Span::styled(branch, Style::default().fg(branch_color));
 
-        if app.config.picker.detailed_rows {
-            let status = entry_status(e);
-            let icon = status
-                .map(|status| format!("{} ", status_icon_at(&e.source, status, app.spinner_tick)))
-                .unwrap_or_default();
-            let status_label = status.filter(|status| *status != "unknown");
-            let raw_path = e.path_text().to_string();
-            let raw_metadata = entry_metadata(e);
-            let meta_width = metadata_width(area.width);
-            let show_metadata = e.pane.is_none()
-                && !matches!(e.source, Source::Zoxide | Source::Root)
-                && meta_width > 0
-                && !raw_metadata.is_empty()
-                && raw_metadata != raw_path;
-            let separator_width = usize::from(show_metadata && status_label.is_some()) * 3;
-            let metadata_budget = meta_width
-                .saturating_sub(
-                    status_label
-                        .map(str::chars)
-                        .map(Iterator::count)
-                        .unwrap_or(0),
-                )
-                .saturating_sub(separator_width);
-            let metadata = if show_metadata {
-                truncate_end(&raw_metadata, metadata_budget)
-            } else {
-                String::new()
-            };
-            let right_width = metadata.chars().count()
-                + separator_width
-                + status_label
-                    .map(str::chars)
-                    .map(Iterator::count)
-                    .unwrap_or(0);
-            let fixed_width = branch.chars().count() + icon.chars().count();
-            let right_column_width = if right_width > 0 {
-                meta_width.max(right_width)
-            } else {
-                0
-            };
-            let title_budget = row_width
-                .saturating_sub(fixed_width)
-                .saturating_sub(right_column_width)
-                .saturating_sub(usize::from(right_width > 0));
-            let title = truncate_end(display_title(e), title_budget);
-            let spacer = if right_width == 0 {
-                String::new()
-            } else {
-                " ".repeat(
-                    row_width
-                        .saturating_sub(fixed_width)
-                        .saturating_sub(title.chars().count())
-                        .saturating_sub(right_column_width),
-                )
-            };
-            let status_color = status
-                .map(|status| agent_status_color(&app.theme, status))
-                .unwrap_or(color);
-            let mut title_spans = vec![
-                Span::styled(branch, Style::default().fg(branch_color)),
-                Span::styled(icon, Style::default().fg(status_color)),
-                Span::styled(title, Style::default().fg(app.theme.text)),
-            ];
-            if right_width > 0 {
-                title_spans.push(Span::raw(spacer));
-                if let Some(status_label) = status_label {
-                    title_spans.push(Span::styled(
-                        status_label.to_string(),
-                        Style::default().fg(status_color),
-                    ));
-                    if !metadata.is_empty() {
-                        title_spans
-                            .push(Span::styled(" · ", Style::default().fg(app.theme.overlay0)));
-                    }
-                }
-                if !metadata.is_empty() {
-                    title_spans.push(Span::styled(
-                        metadata,
-                        Style::default().fg(app.theme.overlay0),
-                    ));
-                }
-            }
-
-            if e.pane.is_some() || matches!(e.source, Source::Zoxide | Source::Root) {
-                let detail_branch = if group_end { "     " } else { "  │  " };
-                let path_budget = row_width.saturating_sub(detail_branch.chars().count());
-                let detail = if e.pane.is_some() {
-                    entry_metadata(e)
-                } else {
-                    display_path(e)
-                };
-                let path = truncate_end(&detail, path_budget);
-                items.push(ListItem::new(vec![
-                    Line::from(title_spans),
-                    Line::from(vec![
-                        Span::styled(detail_branch, Style::default().fg(app.theme.overlay0)),
-                        Span::styled(path, Style::default().fg(app.theme.subtext0)),
-                    ]),
-                ]));
-            } else {
-                items.push(ListItem::new(Line::from(title_spans)));
-            }
+        items.push(if app.config.picker.detailed_rows {
+            detailed_row(app, e, area.width, row_width, group_end, branch, status)
         } else {
-            let status_text = entry_status(e);
-            let status = status_text
-                .map(|status| format!("{} ", status_icon_at(&e.source, status, app.spinner_tick)))
-                .unwrap_or_default();
-            let metadata = if e.pane.is_some() {
-                entry_metadata(e)
-            } else {
-                e.subtitle.clone()
-            };
-            let subtitle = if metadata.is_empty() {
-                String::new()
-            } else {
-                format!("  {metadata}")
-            };
-            let left_len = branch.chars().count()
-                + status.chars().count()
-                + e.title.chars().count()
-                + subtitle.chars().count();
-            let spacer = score
-                .as_ref()
-                .map(|score| {
-                    " ".repeat(
-                        row_width
-                            .saturating_sub(left_len + score.chars().count())
-                            .max(2),
-                    )
-                })
-                .unwrap_or_default();
-            let mut spans = vec![
-                Span::styled(branch, Style::default().fg(branch_color)),
-                Span::styled(
-                    status,
-                    Style::default().fg(status_text
-                        .map(|status| agent_status_color(&app.theme, status))
-                        .unwrap_or(color)),
-                ),
-                Span::styled(e.title.clone(), Style::default().fg(app.theme.text)),
-                Span::styled(subtitle, Style::default().fg(app.theme.subtext0)),
-            ];
-            if let Some(score) = score {
-                spans.push(Span::raw(spacer));
-                spans.push(Span::styled(score, Style::default().fg(app.theme.overlay0)));
-            }
-            items.push(ListItem::new(Line::from(spans)));
-        }
+            let score = show_scores
+                .then(|| app.filtered_scores.get(row).map(|s| format!("score {s}")))
+                .flatten();
+            compact_row(app, e, row_width, branch, status, score)
+        });
     }
     let mut state = ListState::default();
     state.select(selected_row);
@@ -1090,6 +972,144 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
         )
         .highlight_symbol("→ ");
     f.render_stateful_widget(list, area, &mut state);
+}
+
+/// Title line with a right-aligned status/metadata column, plus a detail line
+/// (pane metadata or directory path) for panes and directory sources.
+fn detailed_row<'a>(
+    app: &App,
+    e: &Entry,
+    area_width: u16,
+    row_width: usize,
+    group_end: bool,
+    branch: Span<'a>,
+    status: RowStatus<'_>,
+) -> ListItem<'a> {
+    let status_label = status.text.filter(|status| *status != "unknown");
+    let status_label_width = status_label.map_or(0, |s| s.chars().count());
+    let raw_path = e.path_text().to_string();
+    let raw_metadata = entry_metadata(e);
+    let meta_width = metadata_width(area_width);
+    let show_metadata = e.pane.is_none()
+        && !matches!(e.source, Source::Zoxide | Source::Root)
+        && meta_width > 0
+        && !raw_metadata.is_empty()
+        && raw_metadata != raw_path;
+    let separator_width = usize::from(show_metadata && status_label.is_some()) * 3;
+    let metadata_budget = meta_width
+        .saturating_sub(status_label_width)
+        .saturating_sub(separator_width);
+    let metadata = if show_metadata {
+        truncate_end(&raw_metadata, metadata_budget)
+    } else {
+        String::new()
+    };
+    let right_width = metadata.chars().count() + separator_width + status_label_width;
+    let fixed_width = branch.content.chars().count() + status.icon.chars().count();
+    let right_column_width = if right_width > 0 {
+        meta_width.max(right_width)
+    } else {
+        0
+    };
+    let title_budget = row_width
+        .saturating_sub(fixed_width)
+        .saturating_sub(right_column_width)
+        .saturating_sub(usize::from(right_width > 0));
+    let title = truncate_end(display_title(e), title_budget);
+    let spacer = if right_width == 0 {
+        String::new()
+    } else {
+        " ".repeat(
+            row_width
+                .saturating_sub(fixed_width)
+                .saturating_sub(title.chars().count())
+                .saturating_sub(right_column_width),
+        )
+    };
+    let mut title_spans = vec![
+        branch,
+        Span::styled(status.icon, Style::default().fg(status.color)),
+        Span::styled(title, Style::default().fg(app.theme.text)),
+    ];
+    if right_width > 0 {
+        title_spans.push(Span::raw(spacer));
+        if let Some(status_label) = status_label {
+            title_spans.push(Span::styled(
+                status_label.to_string(),
+                Style::default().fg(status.color),
+            ));
+            if !metadata.is_empty() {
+                title_spans.push(Span::styled(" · ", Style::default().fg(app.theme.overlay0)));
+            }
+        }
+        if !metadata.is_empty() {
+            title_spans.push(Span::styled(
+                metadata,
+                Style::default().fg(app.theme.overlay0),
+            ));
+        }
+    }
+
+    if e.pane.is_none() && !matches!(e.source, Source::Zoxide | Source::Root) {
+        return ListItem::new(Line::from(title_spans));
+    }
+    let detail_branch = if group_end { "     " } else { "  │  " };
+    let path_budget = row_width.saturating_sub(detail_branch.chars().count());
+    let detail = if e.pane.is_some() {
+        entry_metadata(e)
+    } else {
+        display_path(e)
+    };
+    let path = truncate_end(&detail, path_budget);
+    ListItem::new(vec![
+        Line::from(title_spans),
+        Line::from(vec![
+            Span::styled(detail_branch, Style::default().fg(app.theme.overlay0)),
+            Span::styled(path, Style::default().fg(app.theme.subtext0)),
+        ]),
+    ])
+}
+
+/// Single line: title and subtitle, with the match score right-aligned while
+/// a query is active.
+fn compact_row<'a>(
+    app: &App,
+    e: &Entry,
+    row_width: usize,
+    branch: Span<'a>,
+    status: RowStatus<'_>,
+    score: Option<String>,
+) -> ListItem<'a> {
+    let metadata = if e.pane.is_some() {
+        entry_metadata(e)
+    } else {
+        e.subtitle.clone()
+    };
+    let subtitle = if metadata.is_empty() {
+        String::new()
+    } else {
+        format!("  {metadata}")
+    };
+    let left_len = branch.content.chars().count()
+        + status.icon.chars().count()
+        + e.title.chars().count()
+        + subtitle.chars().count();
+    let mut spans = vec![
+        branch,
+        Span::styled(status.icon, Style::default().fg(status.color)),
+        Span::styled(e.title.clone(), Style::default().fg(app.theme.text)),
+        Span::styled(subtitle, Style::default().fg(app.theme.subtext0)),
+    ];
+    if let Some(score) = score {
+        let spacer = " ".repeat(
+            row_width
+                .saturating_sub(left_len + score.chars().count())
+                .max(2),
+        );
+        spans.push(Span::raw(spacer));
+        spans.push(Span::styled(score, Style::default().fg(app.theme.overlay0)));
+    }
+    ListItem::new(Line::from(spans))
 }
 
 fn draw_preview(f: &mut Frame, app: &App, area: Rect) {

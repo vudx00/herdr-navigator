@@ -34,10 +34,6 @@ pub(crate) fn run_herdr<const N: usize>(args: [&str; N]) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
-pub(crate) fn notify_done(body: &str, config: &NotificationsConfig) {
-    notify(body, "done", config);
-}
-
 pub(crate) fn notify_error(body: &str, config: &NotificationsConfig) {
     notify(body, "request", config);
 }
