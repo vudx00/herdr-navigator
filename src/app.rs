@@ -12,10 +12,10 @@ use crate::{
     herdr::{Failure, MutationOutcome, TransportError},
     history::Store,
     integrations::{command, herdr_plus, sessions},
-    matcher::{Query, SearchMatcher},
+    matcher::{match_quality, Query, SearchMatcher},
     model::{
-        Entry, EntryAction, EntryIdentity, LiveIdentity, Source, WorkspaceKind, WorkspaceRef,
-        WorkspaceReuseKey,
+        AgentState, Entry, EntryAction, EntryIdentity, LiveIdentity, Source, WorkspaceKind,
+        WorkspaceRef, WorkspaceReuseKey,
     },
     navigation::{
         inventory::{Inventory, InventoryRead},
@@ -112,15 +112,7 @@ fn best_search_match(
         let Some(score) = matcher.score(field) else {
             continue;
         };
-        let quality = if field == query {
-            3
-        } else if field.starts_with(query) {
-            2
-        } else if field.contains(query) {
-            1
-        } else {
-            0
-        };
+        let quality = match_quality(field, query);
         let candidate = SearchMatch {
             score,
             quality,
@@ -1180,32 +1172,16 @@ impl App {
 }
 
 fn agent_status_bonus(entry: &Entry) -> i64 {
-    let status = status_text(entry);
-    if ["block", "fail", "error"]
-        .iter()
-        .any(|needle| status.contains(needle))
-    {
-        4
-    } else if ["need", "attention", "review", "request", "question", "wait"]
-        .iter()
-        .any(|needle| status.contains(needle))
-    {
-        3
-    } else if status.contains("done") || status.contains("complete") {
-        2
-    } else if status.contains("work") || status.contains("run") {
-        1
-    } else {
-        0
+    let Some(agent) = &entry.agent else {
+        return 0;
+    };
+    match AgentState::classify(&agent.status) {
+        AgentState::Blocked => 4,
+        AgentState::Attention => 3,
+        AgentState::Done => 2,
+        AgentState::Working => 1,
+        AgentState::Idle | AgentState::Unknown => 0,
     }
-}
-
-fn status_text(entry: &Entry) -> String {
-    entry
-        .agent
-        .as_ref()
-        .map(|agent| agent.status.to_lowercase())
-        .unwrap_or_default()
 }
 
 pub(crate) fn jump_back(config: &Config) -> Result<String, String> {

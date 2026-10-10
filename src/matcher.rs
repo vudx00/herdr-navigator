@@ -85,12 +85,42 @@ impl Query {
     }
 }
 
+/// Tokens are already lowercased by `Query::parse`; fields are raw entry data.
 fn tokens_match(tokens: &[String], fields: &[&str]) -> bool {
-    tokens.iter().all(|token| {
-        fields
-            .iter()
-            .any(|field| field.to_lowercase().contains(token))
-    })
+    tokens
+        .iter()
+        .all(|token| fields.iter().any(|field| contains_lowercase(field, token)))
+}
+
+/// `field.to_lowercase().contains(needle)` for an already-lowercase `needle`,
+/// without allocating when `field` is ASCII (the common case). For ASCII
+/// haystacks `to_lowercase` equals `to_ascii_lowercase`, so a byte-window
+/// comparison is exact; non-ASCII haystacks fall back to full Unicode folding.
+fn contains_lowercase(field: &str, needle: &str) -> bool {
+    if !field.is_ascii() {
+        return field.to_lowercase().contains(needle);
+    }
+    let needle = needle.as_bytes();
+    needle.is_empty()
+        || field
+            .as_bytes()
+            .windows(needle.len())
+            .any(|window| window.eq_ignore_ascii_case(needle))
+}
+
+/// Tier of how directly a lowercased search field matches the plain query:
+/// 3 exact, 2 prefix, 1 substring, 0 fuzzy-only. Both ranking paths (main
+/// list and picker) rank higher tiers first.
+pub(crate) fn match_quality(field: &str, query: &str) -> u8 {
+    if field == query {
+        3
+    } else if field.starts_with(query) {
+        2
+    } else if field.contains(query) {
+        1
+    } else {
+        0
+    }
 }
 
 /// Avoid rebuilding matcher state for every candidate.
@@ -162,6 +192,36 @@ fn simple_fuzzy_score(hay: &str, q: &str) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn contains_lowercase_matches_lowercased_contains() {
+        for (field, needle) in [
+            ("Dotfiles", "dot"),
+            ("DOTFILES", "files"),
+            ("dotfiles", "x"),
+            ("", ""),
+            ("abc", ""),
+            ("ab", "abc"),
+            ("Ärger", "är"),
+            ("ÄRGER", "rg"),
+            ("İstanbul", "i̇st"),
+            ("plain", "ä"),
+        ] {
+            assert_eq!(
+                contains_lowercase(field, needle),
+                field.to_lowercase().contains(needle),
+                "{field:?} / {needle:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn match_quality_tiers() {
+        assert_eq!(match_quality("dotfiles", "dotfiles"), 3);
+        assert_eq!(match_quality("dotfiles", "dot"), 2);
+        assert_eq!(match_quality("dotfiles", "files"), 1);
+        assert_eq!(match_quality("dotfiles", "dfs"), 0);
+    }
 
     #[test]
     fn operators_intersect_each_token_with_only_its_allowed_fields() {
