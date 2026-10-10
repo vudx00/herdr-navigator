@@ -648,7 +648,9 @@ impl Entry {
     }
 }
 
-/// Coarse agent state derived from Herdr's free-form status text. Every
+/// Coarse agent state derived from an agent status string. Herdr currently
+/// reports idle/working/blocked/done/unknown; the extra keywords tolerate
+/// richer status text from other sources. Every
 /// consumer (row icon, row color, priority sort, spinner animation) maps this
 /// one classification instead of matching keywords on its own.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
