@@ -206,7 +206,7 @@ pub(crate) struct ResolvedAction {
     target_label: Option<String>,
     ancestry: (Option<LiveIdentity>, Option<LiveIdentity>),
     prepared: Prepared,
-    config: String,
+    config: ConfigStamp,
 }
 
 impl ResolvedAction {
@@ -237,6 +237,81 @@ pub(crate) struct Observations<'a> {
     pub(crate) reuse: &'a HashMap<WorkspaceReuseKey, Vec<WorkspaceRef>>,
 }
 
+/// The configuration an action was resolved against. It takes part in
+/// `ResolvedAction` equality so `revalidate` rejects an activation whose
+/// relevant settings changed since the action was drawn. Only settings that
+/// affect the action family are captured, so unrelated edits do not
+/// invalidate it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ConfigStamp {
+    action: ActionConfig,
+    notifications: (bool, bool, String, Option<String>),
+    scope: ServerScope,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ActionConfig {
+    /// `(id, open, enabled, open_timeout_ms, notify_success, notify_error)`
+    Integrations(Vec<(String, String, bool, u64, bool, bool)>),
+    /// `local` and each entry's `(name, remote, session)`
+    Sessions {
+        local: bool,
+        entries: Vec<(String, Option<String>, Option<String>)>,
+    },
+    Picker {
+        reuse_existing: bool,
+        create_missing: bool,
+        directory_template: Option<String>,
+    },
+    None,
+}
+
+impl ConfigStamp {
+    fn new(action: &EntryAction, config: &Config, scope: &ServerScope) -> Self {
+        let action = match action {
+            EntryAction::RunCommand { .. } => ActionConfig::Integrations(
+                config
+                    .integrations
+                    .iter()
+                    .map(|c| {
+                        (
+                            c.id.clone(),
+                            c.open.clone(),
+                            c.enabled,
+                            c.open_timeout_ms,
+                            c.notify_success,
+                            c.notify_error,
+                        )
+                    })
+                    .collect(),
+            ),
+            EntryAction::OpenRemote { .. } | EntryAction::AttachSession { .. } => {
+                ActionConfig::Sessions {
+                    local: config.sessions.local,
+                    entries: config
+                        .sessions
+                        .entries
+                        .iter()
+                        .map(|c| (c.name.clone(), c.remote.clone(), c.session.clone()))
+                        .collect(),
+                }
+            }
+            EntryAction::OpenProject | EntryAction::FocusOrCreateDir => ActionConfig::Picker {
+                reuse_existing: config.picker.reuse_existing,
+                create_missing: config.picker.create_missing,
+                directory_template: config.picker.directory_template.clone(),
+            },
+            _ => ActionConfig::None,
+        };
+        let n = &config.notifications;
+        Self {
+            action,
+            notifications: (n.enabled, n.audio, n.sound.clone(), n.custom_sound.clone()),
+            scope: scope.clone(),
+        }
+    }
+}
+
 pub(crate) fn resolve(
     entry: &Entry,
     slot: Slot,
@@ -251,42 +326,6 @@ pub(crate) fn resolve(
             | EntryAction::AttachSession { .. }
             | EntryAction::RunCommand { .. }
     );
-    let config_stamp = match &entry.action {
-        EntryAction::RunCommand { .. } => format!(
-            "{:?}",
-            config
-                .integrations
-                .iter()
-                .map(|c| (
-                    &c.id,
-                    &c.open,
-                    c.enabled,
-                    c.open_timeout_ms,
-                    c.notify_success,
-                    c.notify_error
-                ))
-                .collect::<Vec<_>>()
-        ),
-        EntryAction::OpenRemote { .. } | EntryAction::AttachSession { .. } => format!(
-            "{:?}",
-            (
-                config.sessions.local,
-                config
-                    .sessions
-                    .entries
-                    .iter()
-                    .map(|c| (&c.name, &c.remote, &c.session))
-                    .collect::<Vec<_>>()
-            )
-        ),
-        EntryAction::OpenProject | EntryAction::FocusOrCreateDir => format!(
-            "{}:{}:{:?}",
-            config.picker.reuse_existing,
-            config.picker.create_missing,
-            config.picker.directory_template
-        ),
-        _ => String::new(),
-    };
     let mut action = ResolvedAction {
         identity: entry.key().clone(),
         slot,
@@ -309,16 +348,7 @@ pub(crate) fn resolve(
             entry.target().and_then(LiveTarget::tab).cloned(),
         ),
         prepared: prepared.clone(),
-        config: format!(
-            "{config_stamp}:{:?}:{:?}",
-            (
-                config.notifications.enabled,
-                config.notifications.audio,
-                &config.notifications.sound,
-                &config.notifications.custom_sound
-            ),
-            context.scope()
-        ),
+        config: ConfigStamp::new(&entry.action, config, context.scope()),
     };
     let result = (|| {
         if entry.destination_kind() == DestinationKind::Machine {
@@ -330,146 +360,24 @@ pub(crate) fn resolve(
             return Err(reason.clone());
         }
         if let Some(target) = entry.target() {
-            action.description = format!(
-                "Focus {} {}",
-                match target.identity().kind() {
-                    ObjectKind::Workspace => "workspace",
-                    ObjectKind::Tab => "tab",
-                    ObjectKind::Pane => "pane",
-                },
-                entry.title
-            );
-            if target.identity().scope() != context.scope() {
-                return Err("selected target belongs to a different server scope".into());
-            }
-            let valid = match target.identity().kind() {
-                ObjectKind::Workspace => {
-                    matches!(&entry.action, EntryAction::FocusWorkspace { id } if id == target.identity().id())
-                }
-                ObjectKind::Pane => {
-                    matches!(entry.action, EntryAction::FocusPane) && entry.pane.is_some()
-                }
-                ObjectKind::Tab => matches!(entry.action, EntryAction::FocusTab),
-            };
-            if !valid {
-                return Err("action does not match qualified target".into());
-            }
-            if !live_available(target, &observations) {
-                return Err("target inventory is unavailable or ancestry changed".into());
-            }
-            if target.identity().kind() == ObjectKind::Tab {
-                action.target_label = observations
-                    .inventory
-                    .and_then(|inventory| {
-                        inventory
-                            .tabs
-                            .rows(context.scope())
-                            .iter()
-                            .find(|row| row.tab_id == target.identity().id())
-                    })
-                    .map(|row| row.label.clone());
-            }
-            action.payload = Payload::Focus(target.clone());
-            return Ok(());
+            return resolve_focus(&mut action, entry, target, &observations);
         }
         match &entry.action {
             EntryAction::OpenProject | EntryAction::FocusOrCreateDir => {
-                action.description = if matches!(entry.action, EntryAction::OpenProject) {
-                    "Create project"
-                } else if slot == Slot::Template {
-                    "Apply template"
-                } else {
-                    "Open folder"
-                }
-                .into();
-                context.require_process_server_colocation()?;
-                if let Some(error) = &prepared.error {
-                    return Err(error.clone());
-                }
-                let cwd = prepared
-                    .cwd
-                    .clone()
-                    .ok_or("process path has not been prepared")?;
-                let existing = matching(entry, slot, prepared, &observations)?;
-                let template = prepared.template.clone();
-                if let Some(ws) =
-                    existing.filter(|_| slot == Slot::Template || config.picker.reuse_existing)
-                {
-                    action.target_path = ws.path.clone();
-                    action.target_label = Some(ws.label.clone());
-                    let target = LiveTarget::new(ws.identity.clone(), None, None)
-                        .ok_or("invalid workspace")?;
-                    if slot == Slot::Template {
-                        let template = template.ok_or("template is unavailable")?;
-                        action.description = format!(
-                            "Apply {} to workspace {} [{}]",
-                            template.project.name,
-                            ws.label,
-                            ws.identity.id()
-                        );
-                        action.payload = Payload::ApplyTemplate {
-                            target,
-                            cwd,
-                            template,
-                        };
-                    } else {
-                        action.description =
-                            format!("Focus workspace {} [{}]", ws.label, ws.identity.id());
-                        action.payload = Payload::Focus(target);
-                    }
-                } else {
-                    if slot != Slot::Template && !config.picker.create_missing {
-                        return Err("create_missing=false and no reusable workspace exists".into());
-                    }
-                    if slot == Slot::Template {
-                        let template = template.ok_or("template is unavailable")?;
-                        action.description = format!(
-                            "Create template {} in {}",
-                            template.project.name,
-                            cwd.display()
-                        );
-                        action.payload = Payload::CreateTemplate {
-                            cwd,
-                            label: entry.title.clone(),
-                            template,
-                        };
-                    } else if matches!(entry.action, EntryAction::OpenProject) {
-                        let template = template.ok_or("template is unavailable")?;
-                        let label = format!("project: {}", template.project.name);
-                        action.description = format!(
-                            "Create project {} in {}",
-                            template.project.name,
-                            cwd.display()
-                        );
-                        action.payload = Payload::CreateProject {
-                            cwd,
-                            label,
-                            template,
-                        };
-                    } else {
-                        action.description = format!("Open folder {}", cwd.display());
-                        action.payload = Payload::OpenFolder {
-                            cwd,
-                            label: entry.title.clone(),
-                        };
-                    }
-                }
+                resolve_directory(&mut action, entry, slot, prepared, config, &observations)
             }
             EntryAction::OpenRemote { target } => {
-                action.description = format!("Attach remote {target}");
-                action.notify_success = false;
-                action.payload = Payload::Attach {
-                    target: target.clone(),
-                    remote: true,
-                };
+                resolve_attach(&mut action, format!("Attach remote {target}"), target, true);
+                Ok(())
             }
             EntryAction::AttachSession { name, remote } => {
-                action.description = format!("Attach {}", remote.as_deref().unwrap_or(name));
-                action.notify_success = false;
-                action.payload = Payload::Attach {
-                    target: remote.as_ref().unwrap_or(name).clone(),
-                    remote: remote.is_some(),
-                };
+                resolve_attach(
+                    &mut action,
+                    format!("Attach {}", remote.as_deref().unwrap_or(name)),
+                    remote.as_ref().unwrap_or(name),
+                    remote.is_some(),
+                );
+                Ok(())
             }
             EntryAction::RunCommand {
                 command,
@@ -484,16 +392,17 @@ pub(crate) fn resolve(
                     command: command.clone(),
                     timeout_ms: *timeout_ms,
                 };
+                Ok(())
             }
             EntryAction::InvokePluginAction { action: plugin } => {
                 action.description = format!("Run plugin {plugin} on server scope");
                 action.payload = Payload::Plugin {
                     action: plugin.clone(),
                 };
+                Ok(())
             }
-            _ => return Err("qualified target is unavailable".into()),
+            _ => Err("qualified target is unavailable".into()),
         }
-        Ok(())
     })();
     action.unavailable = result.err();
     if action.unavailable.is_none() {
@@ -505,6 +414,174 @@ pub(crate) fn resolve(
         }
     }
     action
+}
+
+/// Entries that already name a live workspace, tab or pane.
+fn resolve_focus(
+    action: &mut ResolvedAction,
+    entry: &Entry,
+    target: &LiveTarget,
+    observations: &Observations<'_>,
+) -> Result<(), String> {
+    let context = observations.context;
+    action.description = format!(
+        "Focus {} {}",
+        match target.identity().kind() {
+            ObjectKind::Workspace => "workspace",
+            ObjectKind::Tab => "tab",
+            ObjectKind::Pane => "pane",
+        },
+        entry.title
+    );
+    if target.identity().scope() != context.scope() {
+        return Err("selected target belongs to a different server scope".into());
+    }
+    let valid = match target.identity().kind() {
+        ObjectKind::Workspace => {
+            matches!(&entry.action, EntryAction::FocusWorkspace { id } if id == target.identity().id())
+        }
+        ObjectKind::Pane => matches!(entry.action, EntryAction::FocusPane) && entry.pane.is_some(),
+        ObjectKind::Tab => matches!(entry.action, EntryAction::FocusTab),
+    };
+    if !valid {
+        return Err("action does not match qualified target".into());
+    }
+    if !live_available(target, observations) {
+        return Err("target inventory is unavailable or ancestry changed".into());
+    }
+    if target.identity().kind() == ObjectKind::Tab {
+        action.target_label = observations
+            .inventory
+            .and_then(|inventory| {
+                inventory
+                    .tabs
+                    .rows(context.scope())
+                    .iter()
+                    .find(|row| row.tab_id == target.identity().id())
+            })
+            .map(|row| row.label.clone());
+    }
+    action.payload = Payload::Focus(target.clone());
+    Ok(())
+}
+
+/// `OpenProject` and `FocusOrCreateDir`: reuse a matching workspace or create one.
+fn resolve_directory(
+    action: &mut ResolvedAction,
+    entry: &Entry,
+    slot: Slot,
+    prepared: &Prepared,
+    config: &Config,
+    observations: &Observations<'_>,
+) -> Result<(), String> {
+    action.description = if matches!(entry.action, EntryAction::OpenProject) {
+        "Create project"
+    } else if slot == Slot::Template {
+        "Apply template"
+    } else {
+        "Open folder"
+    }
+    .into();
+    observations.context.require_process_server_colocation()?;
+    if let Some(error) = &prepared.error {
+        return Err(error.clone());
+    }
+    let cwd = prepared
+        .cwd
+        .clone()
+        .ok_or("process path has not been prepared")?;
+    let existing = matching(entry, slot, prepared, observations)?;
+    match existing.filter(|_| slot == Slot::Template || config.picker.reuse_existing) {
+        Some(ws) => reuse_workspace(action, ws, slot, cwd, prepared.template.clone()),
+        None => {
+            if slot != Slot::Template && !config.picker.create_missing {
+                return Err("create_missing=false and no reusable workspace exists".into());
+            }
+            create_workspace(action, entry, slot, cwd, prepared.template.clone())
+        }
+    }
+}
+
+fn reuse_workspace(
+    action: &mut ResolvedAction,
+    ws: &WorkspaceRef,
+    slot: Slot,
+    cwd: PathBuf,
+    template: Option<Arc<Template>>,
+) -> Result<(), String> {
+    action.target_path = ws.path.clone();
+    action.target_label = Some(ws.label.clone());
+    let target = LiveTarget::new(ws.identity.clone(), None, None).ok_or("invalid workspace")?;
+    if slot == Slot::Template {
+        let template = template.ok_or("template is unavailable")?;
+        action.description = format!(
+            "Apply {} to workspace {} [{}]",
+            template.project.name,
+            ws.label,
+            ws.identity.id()
+        );
+        action.payload = Payload::ApplyTemplate {
+            target,
+            cwd,
+            template,
+        };
+    } else {
+        action.description = format!("Focus workspace {} [{}]", ws.label, ws.identity.id());
+        action.payload = Payload::Focus(target);
+    }
+    Ok(())
+}
+
+fn create_workspace(
+    action: &mut ResolvedAction,
+    entry: &Entry,
+    slot: Slot,
+    cwd: PathBuf,
+    template: Option<Arc<Template>>,
+) -> Result<(), String> {
+    if slot == Slot::Template {
+        let template = template.ok_or("template is unavailable")?;
+        action.description = format!(
+            "Create template {} in {}",
+            template.project.name,
+            cwd.display()
+        );
+        action.payload = Payload::CreateTemplate {
+            cwd,
+            label: entry.title.clone(),
+            template,
+        };
+    } else if matches!(entry.action, EntryAction::OpenProject) {
+        let template = template.ok_or("template is unavailable")?;
+        let label = format!("project: {}", template.project.name);
+        action.description = format!(
+            "Create project {} in {}",
+            template.project.name,
+            cwd.display()
+        );
+        action.payload = Payload::CreateProject {
+            cwd,
+            label,
+            template,
+        };
+    } else {
+        action.description = format!("Open folder {}", cwd.display());
+        action.payload = Payload::OpenFolder {
+            cwd,
+            label: entry.title.clone(),
+        };
+    }
+    Ok(())
+}
+
+/// `OpenRemote` and `AttachSession`: success is visible, so it is not notified.
+fn resolve_attach(action: &mut ResolvedAction, description: String, target: &str, remote: bool) {
+    action.description = description;
+    action.notify_success = false;
+    action.payload = Payload::Attach {
+        target: target.to_owned(),
+        remote,
+    };
 }
 
 fn live_available(target: &LiveTarget, observations: &Observations<'_>) -> bool {
