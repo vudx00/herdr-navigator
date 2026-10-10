@@ -32,6 +32,23 @@ fn copy_missing_files(from: &Path, to: &Path) -> io::Result<()> {
     }
     Ok(())
 }
+/// Herdr's own `config.toml`: `$XDG_CONFIG_HOME/herdr/config.toml`, else
+/// `~/.config/herdr/config.toml`. Read live (not cached) so tests that set
+/// `XDG_CONFIG_HOME` see the change.
+pub(crate) fn herdr_config_path() -> PathBuf {
+    env::var("XDG_CONFIG_HOME")
+        .map(|xdg| Path::new(&xdg).join("herdr/config.toml"))
+        .unwrap_or_else(|_| home().join(".config/herdr/config.toml"))
+}
+
+/// Herdr's `config.toml`, parsed; `None` when it is missing or invalid TOML.
+pub(crate) fn herdr_config() -> Option<toml::Value> {
+    fs::read_to_string(herdr_config_path())
+        .ok()?
+        .parse::<toml::Value>()
+        .ok()
+}
+
 pub(crate) fn herdr_plus_projects_dir() -> PathBuf {
     home().join(".config/herdr/plugins/config/cloudmanic.herdr-plus/projects")
 }

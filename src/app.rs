@@ -1,9 +1,12 @@
 use std::{
     collections::{HashMap, HashSet},
-    env, fs,
-    path::Path,
     thread,
     time::{Duration, Instant},
+};
+#[cfg(test)]
+use {
+    crate::paths::home,
+    std::{env, fs, path::Path},
 };
 
 use crate::{
@@ -21,7 +24,7 @@ use crate::{
         inventory::{Inventory, InventoryRead},
         NavigationContext,
     },
-    paths::{herdr_plus_quick_actions_dir, home},
+    paths::herdr_plus_quick_actions_dir,
     sources::{collect_roots, collect_zoxide, join_inventory, JoinedInventory, PaneOrdinals},
     theme::Theme,
 };
@@ -40,26 +43,21 @@ impl AgentSort {
         match configured.trim().to_ascii_lowercase().as_str() {
             "priority" => Self::Priority,
             "spaces" => Self::Spaces,
-            _ => Self::from_herdr_config(),
+            _ => Self::from_herdr_config(crate::paths::herdr_config().as_ref()),
         }
     }
 
-    fn from_herdr_config() -> Self {
-        let path = env::var("XDG_CONFIG_HOME")
-            .map(|xdg| Path::new(&xdg).join("herdr/config.toml"))
-            .unwrap_or_else(|_| home().join(".config/herdr/config.toml"));
-        let configured = fs::read_to_string(path)
-            .ok()
-            .and_then(|source| source.parse::<toml::Value>().ok())
-            .and_then(|value| {
-                value
-                    .get("ui")
-                    .and_then(toml::Value::as_table)
-                    .and_then(|ui| ui.get("agent_panel_sort"))
-                    .or_else(|| value.get("agent_panel_sort"))
-                    .and_then(toml::Value::as_str)
-                    .map(str::to_ascii_lowercase)
-            });
+    /// `ui.agent_panel_sort`, falling back to a top-level `agent_panel_sort`.
+    fn from_herdr_config(herdr: Option<&toml::Value>) -> Self {
+        let configured = herdr.and_then(|value| {
+            value
+                .get("ui")
+                .and_then(toml::Value::as_table)
+                .and_then(|ui| ui.get("agent_panel_sort"))
+                .or_else(|| value.get("agent_panel_sort"))
+                .and_then(toml::Value::as_str)
+                .map(str::to_ascii_lowercase)
+        });
         match configured.as_deref() {
             Some("priority") => Self::Priority,
             _ => Self::Spaces,
@@ -2148,6 +2146,35 @@ exit {exit_code}
         assert_eq!(agent_status_bonus(&idle), 0);
         assert_eq!(AgentSort::resolve("priority"), AgentSort::Priority);
         assert_eq!(AgentSort::resolve("spaces"), AgentSort::Spaces);
+    }
+
+    #[test]
+    fn agent_sort_falls_back_to_herdr_agent_panel_sort() {
+        let sort = |source: &str| {
+            AgentSort::from_herdr_config(Some(&source.parse::<toml::Value>().unwrap()))
+        };
+        assert_eq!(AgentSort::from_herdr_config(None), AgentSort::Spaces);
+        assert_eq!(sort(""), AgentSort::Spaces);
+        assert_eq!(
+            sort("[ui]\nagent_panel_sort = \"Priority\""),
+            AgentSort::Priority
+        );
+        assert_eq!(
+            sort("[ui]\nagent_panel_sort = \"spaces\""),
+            AgentSort::Spaces
+        );
+        assert_eq!(sort("agent_panel_sort = \"priority\""), AgentSort::Priority);
+        // `ui.agent_panel_sort` wins over the top-level key.
+        assert_eq!(
+            sort("agent_panel_sort = \"priority\"\n[ui]\nagent_panel_sort = \"spaces\""),
+            AgentSort::Spaces
+        );
+        // A `[ui]` table without the key still consults the top level.
+        assert_eq!(
+            sort("agent_panel_sort = \"priority\"\n[ui]\nother = 1"),
+            AgentSort::Priority
+        );
+        assert_eq!(sort("[ui]\nagent_panel_sort = 3"), AgentSort::Spaces);
     }
 
     #[test]

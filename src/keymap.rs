@@ -1,3 +1,5 @@
+use std::{cell::RefCell, rc::Rc};
+
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::{
@@ -62,7 +64,7 @@ pub(crate) struct InputContext {
     pub(crate) menu: bool,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Availability {
     pub(crate) template: bool,
     pub(crate) update: bool,
@@ -128,12 +130,7 @@ impl Keybind {
 }
 
 fn key(code: KeyCode, modifiers: KeyModifiers, label: impl Into<String>) -> KeySpec {
-    KeySpec {
-        code,
-        modifiers,
-        label: label.into(),
-        scope: Scope::Always,
-    }
+    scoped_key(code, modifiers, label, Scope::Always)
 }
 
 fn scoped_key(
@@ -590,7 +587,7 @@ fn merged_admissions(picker: &PickerConfig) -> Vec<MergedAdmission> {
     decisions
 }
 
-fn registered_bindings(picker: &PickerConfig, availability: Availability) -> Vec<Keybind> {
+fn build_registered_bindings(picker: &PickerConfig, availability: Availability) -> Vec<Keybind> {
     let mut bindings = base_registry(picker, availability);
     bindings.extend(
         merged_admissions(picker)
@@ -599,6 +596,53 @@ fn registered_bindings(picker: &PickerConfig, availability: Availability) -> Vec
             .map(|admission| admission.binding),
     );
     bindings
+}
+
+/// Registries built for one `PickerConfig`, one per `Availability` seen.
+struct RegistryCache {
+    picker: PickerConfig,
+    registries: Vec<(Availability, Rc<[Keybind]>)>,
+}
+
+thread_local! {
+    static REGISTRY_CACHE: RefCell<Option<RegistryCache>> = const { RefCell::new(None) };
+}
+
+/// The registry depends only on `picker` and `availability`, but key dispatch
+/// and every frame's hints/help ask for it, and building it runs the merged
+/// admission conflict analysis. Memoize it, keyed by an equality check on the
+/// picker config so any config change (or a different config in tests)
+/// rebuilds it.
+fn registered_bindings(picker: &PickerConfig, availability: Availability) -> Rc<[Keybind]> {
+    REGISTRY_CACHE.with(|cell| {
+        let mut cache = cell.borrow_mut();
+        if cache.as_ref().is_none_or(|cache| cache.picker != *picker) {
+            *cache = Some(RegistryCache {
+                picker: picker.clone(),
+                registries: Vec::new(),
+            });
+        }
+        let cache = cache.as_mut().expect("registry cache initialized above");
+        if let Some((_, registry)) = cache
+            .registries
+            .iter()
+            .find(|(cached, _)| *cached == availability)
+        {
+            return Rc::clone(registry);
+        }
+        let registry: Rc<[Keybind]> = build_registered_bindings(picker, availability).into();
+        cache.registries.push((availability, Rc::clone(&registry)));
+        registry
+    })
+}
+
+fn key_active(
+    picker: &PickerConfig,
+    context: InputContext,
+    command: &Command,
+    spec: &KeySpec,
+) -> bool {
+    spec.scope.enabled(picker, context) && (!context.menu || menu_key_enabled(command, spec))
 }
 
 fn menu_key_enabled(command: &Command, spec: &KeySpec) -> bool {
@@ -618,25 +662,34 @@ pub(crate) fn effective_bindings(
 ) -> Vec<Keybind> {
     let mut claimed = Vec::new();
     registered_bindings(picker, availability)
-        .into_iter()
-        .filter_map(|mut binding| {
-            let command = binding.command.clone();
-            binding.keys.retain(|spec| {
-                if !spec.scope.enabled(picker, context)
-                    || (context.menu && !menu_key_enabled(&command, spec))
-                {
-                    return false;
-                }
-                let event = (spec.code, spec.modifiers);
-                if claimed.contains(&event) {
-                    return false;
-                }
-                claimed.push(event);
-                true
-            });
-            if binding.keys.is_empty() {
+        .iter()
+        .filter_map(|binding| {
+            let keys: Vec<KeySpec> = binding
+                .keys
+                .iter()
+                .filter(|spec| {
+                    if !key_active(picker, context, &binding.command, spec) {
+                        return false;
+                    }
+                    let event = (spec.code, spec.modifiers);
+                    if claimed.contains(&event) {
+                        return false;
+                    }
+                    claimed.push(event);
+                    true
+                })
+                .cloned()
+                .collect();
+            if keys.is_empty() {
                 return None;
             }
+            let mut binding = Keybind {
+                command: binding.command.clone(),
+                label: binding.label.clone(),
+                group: binding.group,
+                compact_label: binding.compact_label,
+                keys,
+            };
             if binding.command == Command::Open {
                 if context.menu {
                     binding.label = "choose filter".into();
@@ -657,15 +710,18 @@ pub(crate) fn resolve(
     availability: Availability,
     event: KeyEvent,
 ) -> Option<Command> {
-    effective_bindings(picker, context, availability)
-        .into_iter()
+    // Equivalent to searching `effective_bindings`: an event is claimed by the
+    // first binding with an active key for it, so later claims cannot matter.
+    registered_bindings(picker, availability)
+        .iter()
         .find(|binding| {
-            binding
-                .keys
-                .iter()
-                .any(|spec| spec.code == event.code && spec.modifiers == event.modifiers)
+            binding.keys.iter().any(|spec| {
+                spec.code == event.code
+                    && spec.modifiers == event.modifiers
+                    && key_active(picker, context, &binding.command, spec)
+            })
         })
-        .map(|binding| binding.command)
+        .map(|binding| binding.command.clone())
 }
 
 fn normalized_key(spec: &KeySpec) -> String {

@@ -359,7 +359,7 @@ fn handle_key(app: &mut App, session: &mut TuiInputSession, key: KeyEvent) -> Ac
         update: app.update_available.is_some(),
         reject_unavailable: false,
     };
-    let config = app.config.picker.clone();
+    let config = &app.config.picker;
     let visible = VisibleRegions::legacy(session.state.details.visible);
     let effects = input::reduce(
         &mut session.state,
@@ -367,7 +367,7 @@ fn handle_key(app: &mut App, session: &mut TuiInputSession, key: KeyEvent) -> Ac
         None,
         key,
         InputContext {
-            config: &config,
+            config,
             visible,
             rows: &rows,
             actions,

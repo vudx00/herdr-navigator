@@ -1,11 +1,4 @@
-use std::{
-    env, fs,
-    path::{Path, PathBuf},
-};
-
 use ratatui::style::Color;
-
-use crate::paths::home;
 
 #[derive(Clone)]
 pub(crate) struct Theme {
@@ -410,14 +403,9 @@ impl Theme {
         if !inherit {
             return Self::one_light();
         }
-        let path = herdr_config_path();
-        let Ok(s) = fs::read_to_string(path) else {
-            return Self::one_light();
-        };
-        let Ok(v) = s.parse::<toml::Value>() else {
-            return Self::one_light();
-        };
-        Self::from_herdr_config(&v)
+        crate::paths::herdr_config()
+            .map(|v| Self::from_herdr_config(&v))
+            .unwrap_or_else(Self::one_light)
     }
 
     fn from_herdr_config(v: &toml::Value) -> Self {
@@ -495,13 +483,6 @@ impl Theme {
             _ => {}
         }
     }
-}
-
-fn herdr_config_path() -> PathBuf {
-    if let Ok(xdg) = env::var("XDG_CONFIG_HOME") {
-        return Path::new(&xdg).join("herdr/config.toml");
-    }
-    home().join(".config/herdr/config.toml")
 }
 
 fn normalize_theme_name(name: &str) -> String {
