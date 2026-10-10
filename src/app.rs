@@ -78,9 +78,19 @@ struct Collected {
     integrations: Vec<Entry>,
 }
 
-/// Disabled or panicking collectors degrade to no entries.
-fn joined<T: Default>(handle: Option<thread::ScopedJoinHandle<'_, T>>) -> T {
-    handle.map_or_else(T::default, |handle| handle.join().unwrap_or_default())
+/// Disabled or panicking collectors degrade to no entries; a panic records
+/// `name` in `panicked` so the caller can report it.
+fn joined<T: Default>(
+    handle: Option<thread::ScopedJoinHandle<'_, T>>,
+    name: &'static str,
+    panicked: &mut Vec<&'static str>,
+) -> T {
+    handle.map_or_else(T::default, |handle| {
+        handle.join().unwrap_or_else(|_| {
+            panicked.push(name);
+            T::default()
+        })
+    })
 }
 
 /// Sort inputs resolved once per row: deriving them inside the comparator
@@ -291,6 +301,7 @@ impl App {
         let sources = &config.sources;
         let request_scope = self.navigation.scope().clone();
         let navigation = &self.navigation;
+        let mut panicked = Vec::new();
         let mut collected = thread::scope(|scope| {
             let inventory = scope.spawn(|| {
                 let server = navigation.server();
@@ -321,22 +332,32 @@ impl App {
             let integrations = scope.spawn(|| command::collect(&config.integrations));
             Collected {
                 inventory: inventory.join().unwrap_or_else(|_| {
-                    let failure = || TransportError::new(Failure::Io, MutationOutcome::NotSent);
+                    fn failed<T>(scope: &crate::model::ServerScope) -> InventoryRead<T> {
+                        let error = TransportError::new(Failure::Io, MutationOutcome::NotSent);
+                        InventoryRead::new(scope, Some(Err(error)))
+                    }
                     Inventory {
-                        workspaces: InventoryRead::new(&request_scope, Some(Err(failure()))),
-                        panes: InventoryRead::new(&request_scope, Some(Err(failure()))),
-                        tabs: InventoryRead::new(&request_scope, Some(Err(failure()))),
-                        agents: InventoryRead::new(&request_scope, Some(Err(failure()))),
+                        workspaces: failed(&request_scope),
+                        panes: failed(&request_scope),
+                        tabs: failed(&request_scope),
+                        agents: failed(&request_scope),
                     }
                 }),
-                projects: joined(projects),
-                zoxide: joined(zoxide),
-                roots: joined(roots),
-                remotes: joined(remotes),
-                sessions: joined(session_entries),
-                integrations: integrations.join().unwrap_or_default(),
+                projects: joined(projects, "Herdr Plus projects", &mut panicked),
+                zoxide: joined(zoxide, "zoxide", &mut panicked),
+                roots: joined(roots, "roots", &mut panicked),
+                remotes: joined(remotes, "servers", &mut panicked),
+                sessions: joined(session_entries, "sessions", &mut panicked),
+                integrations: joined(Some(integrations), "integrations", &mut panicked),
             }
         });
+        if !panicked.is_empty() {
+            self.navigation.server().notify(
+                &format!("Failed to collect {}", panicked.join(", ")),
+                false,
+                &self.config.notifications,
+            );
+        }
 
         // Apply failures before conversion. A response collected in the old
         // generation must never acquire the new generation's identities.
@@ -549,6 +570,10 @@ impl App {
             .and_then(|idx| self.entries.get(*idx))
     }
 
+    // History key errors are deliberately not surfaced: a broken history
+    // document is already reported once at startup, and the per-entry errors
+    // mean the entry has no durable pin identity, so "not pinned" is correct.
+    // Marking such an entry reports the error through `toggle_selected_pin`.
     fn project_pins(&mut self) {
         self.pinned_entries.retain(|key| matches!(key, EntryIdentity::Live(target) if target.identity().scope() == self.navigation.scope()));
         for entry in &self.entries {
@@ -594,11 +619,9 @@ impl App {
         {
             self.history.set_pin(provider, !self.is_pinned(entry))?;
         }
-        let mut pinned = self.pinned_entries.clone();
-        if !pinned.remove(&key) {
-            pinned.insert(key.clone());
+        if !self.pinned_entries.remove(&key) {
+            self.pinned_entries.insert(key.clone());
         }
-        self.pinned_entries = pinned;
         self.apply_filter();
         // Marking re-sorts the list; keep the cursor on the row the user marked.
         self.restore_selection(Some(&key));
@@ -1035,14 +1058,19 @@ impl App {
             .action
             .clone();
         let description = self
-            .joined_inventory
-            .workspaces
-            .iter()
-            .find(|row| row.target().is_some_and(|target| target.identity() == &id))
-            .map(|row| format!("{} [{}]", row.title, id.id()))
-            .unwrap_or_else(|| format!("{} [{}]", entry.title, id.id()));
+            .inventory_close_description(&id)
+            .unwrap_or_else(|| close_description(&entry.title, &id));
         self.close_token = Some((entry.key().clone(), id, description, action));
         Ok(())
+    }
+
+    /// Describes workspace `id` as currently observed in the joined inventory.
+    fn inventory_close_description(&self, id: &LiveIdentity) -> Option<String> {
+        self.joined_inventory
+            .workspaces
+            .iter()
+            .find(|row| row.target().is_some_and(|target| target.identity() == id))
+            .map(|row| close_description(&row.title, id))
     }
 
     pub(crate) fn close_description(&self) -> Option<&str> {
@@ -1060,12 +1088,7 @@ impl App {
         }
         self.revalidate_action(&retained)?;
         let entry = self.selected_entry().ok_or("nothing selected")?;
-        let current_description = self
-            .joined_inventory
-            .workspaces
-            .iter()
-            .find(|row| row.target().is_some_and(|target| target.identity() == &id))
-            .map(|row| format!("{} [{}]", row.title, id.id()));
+        let current_description = self.inventory_close_description(&id);
         if current_description.as_ref() != Some(&description) {
             return Err("close target changed; confirm again".into());
         }
@@ -1073,6 +1096,8 @@ impl App {
             return Err("close target changed; confirm again".into());
         }
         let title = entry.title.clone();
+        // Not redundant with the check above: revalidation may observe a
+        // transport failure that invalidates the scope and clears picker ownership.
         if let Some(error) = close_current_workspace_error(&id, self.navigation.picker_workspace())
         {
             return Err(error);
@@ -1208,11 +1233,16 @@ fn status_text(entry: &Entry) -> String {
         .unwrap_or_default()
 }
 
-pub(crate) fn jump_back(config: &Config) -> Result<String, String> {
+/// Jump back is not available yet; returns why, for the caller to report as a failure.
+pub(crate) fn jump_back(config: &Config) -> &'static str {
     if !config.jump_back.enabled {
-        return Err("jump back is disabled in config".into());
+        return "jump back is disabled in config";
     }
-    Err("jump back requires qualified persistent history; legacy state was left untouched".into())
+    "jump back requires qualified persistent history; legacy state was left untouched"
+}
+
+fn close_description(title: &str, id: &LiveIdentity) -> String {
+    format!("{title} [{}]", id.id())
 }
 
 fn close_current_workspace_error(
@@ -2933,7 +2963,7 @@ exit {exit_code}
         let jump = jump_back(&app.config);
         result.unwrap();
         assert_eq!(app.pinned_entries.len(), 1);
-        assert!(jump.unwrap_err().contains("qualified persistent history"));
+        assert!(jump.contains("qualified persistent history"));
         assert_eq!(fs::read(dir.join("pinned-entries.json")).unwrap(), pins);
         assert_eq!(
             fs::read_to_string(dir.join("jump-back-workspace")).unwrap(),

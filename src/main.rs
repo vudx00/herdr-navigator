@@ -170,17 +170,10 @@ fn run_plugin_pane_cmd(cmd: &str, pane_id: &str) -> ! {
 
 fn jump_back() -> ! {
     let config = Config::load();
-    match app::jump_back(&config) {
-        Ok(label) => {
-            herdr::notify_done(&format!("Jumped back to {label}"), &config.notifications);
-            process::exit(0);
-        }
-        Err(error) => {
-            herdr::notify_error(&format!("Jump back failed: {error}"), &config.notifications);
-            eprintln!("jump back failed: {error}");
-            process::exit(1);
-        }
-    }
+    let error = app::jump_back(&config);
+    herdr::notify_error(&format!("Jump back failed: {error}"), &config.notifications);
+    eprintln!("jump back failed: {error}");
+    process::exit(1);
 }
 
 fn run_ui(persist: bool) -> ! {
