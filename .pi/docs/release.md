@@ -31,6 +31,6 @@ Release workflow builds archives:
 
 ```bash
 git status --short
-gh run list --repo thanhdat77/herdr-navigator --limit 5
-gh release view vX.Y.Z --repo thanhdat77/herdr-navigator
+gh run list --repo vudx00/herdr-navigator --limit 5
+gh release view vX.Y.Z --repo vudx00/herdr-navigator
 ```
