@@ -11,8 +11,8 @@ use serde_json::Value;
 use crate::{
     config::Config,
     model::{
-        AgentFreshness, AgentMetadata, Entry, EntryAction, EntryIdentity, LiveIdentity, LiveTarget,
-        ObjectKind, PaneMetadata, ProviderId, Source, WorkspaceKind, WorkspaceRef,
+        AgentFreshness, AgentMetadata, AgentState, Entry, EntryAction, EntryIdentity, LiveIdentity,
+        LiveTarget, ObjectKind, PaneMetadata, ProviderId, Source, WorkspaceKind, WorkspaceRef,
         WorkspaceReuseKey,
     },
     navigation::{
@@ -445,37 +445,16 @@ const AGENT_SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦"
 // Mirrors Herdr's workspace `state_dot` and agent `agent_icon` mappings.
 pub(crate) fn status_icon_at(source: &Source, status: &str, tick: u32) -> &'static str {
     let workspace = *source == Source::Workspace;
-    let status = status.to_lowercase();
-    if status.contains("block")
-        || status.contains("error")
-        || status.contains("fail")
-        || status.contains("attention")
-        || status.contains("request")
-        || status.contains("wait")
-    {
-        if workspace {
-            "●"
-        } else {
-            "◉"
-        }
-    } else if status.contains("work") || status.contains("run") {
-        if workspace {
-            "●"
-        } else {
-            AGENT_SPINNER[tick as usize % AGENT_SPINNER.len()]
-        }
-    } else if status.contains("done") || status.contains("complete") {
-        "●"
-    } else if status.contains("idle") {
-        if workspace {
-            "○"
-        } else {
-            "✓"
-        }
-    } else if workspace {
-        "·"
-    } else {
-        "○"
+    match AgentState::classify(status) {
+        AgentState::Blocked | AgentState::Attention if workspace => "●",
+        AgentState::Blocked | AgentState::Attention => "◉",
+        AgentState::Working if workspace => "●",
+        AgentState::Working => AGENT_SPINNER[tick as usize % AGENT_SPINNER.len()],
+        AgentState::Done => "●",
+        AgentState::Idle if workspace => "○",
+        AgentState::Idle => "✓",
+        AgentState::Unknown if workspace => "·",
+        AgentState::Unknown => "○",
     }
 }
 

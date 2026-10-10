@@ -648,6 +648,47 @@ impl Entry {
     }
 }
 
+/// Coarse agent state derived from Herdr's free-form status text. Every
+/// consumer (row icon, row color, priority sort, spinner animation) maps this
+/// one classification instead of matching keywords on its own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AgentState {
+    /// Blocked, failed or errored.
+    Blocked,
+    /// Waiting on the user: needs attention, review, a question or a request.
+    Attention,
+    Working,
+    Done,
+    Idle,
+    Unknown,
+}
+
+impl AgentState {
+    const BLOCKED: &'static [&'static str] = &["block", "fail", "error"];
+    const ATTENTION: &'static [&'static str] =
+        &["need", "attention", "review", "request", "question", "wait"];
+
+    /// Case-insensitive keyword classification. Earlier variants win when a
+    /// status mentions several states.
+    pub(crate) fn classify(status: &str) -> Self {
+        let status = status.to_lowercase();
+        let any = |needles: &[&str]| needles.iter().any(|needle| status.contains(needle));
+        if any(Self::BLOCKED) {
+            Self::Blocked
+        } else if any(Self::ATTENTION) {
+            Self::Attention
+        } else if any(&["work", "run"]) {
+            Self::Working
+        } else if any(&["done", "complete"]) {
+            Self::Done
+        } else if status.contains("idle") {
+            Self::Idle
+        } else {
+            Self::Unknown
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub(crate) struct Project {
     pub(crate) name: String,
@@ -701,6 +742,43 @@ impl ProjectTab {
 #[cfg(test)]
 mod domain_tests {
     use super::*;
+
+    #[test]
+    fn agent_status_classify_covers_each_state() {
+        for (status, expected) in [
+            ("blocked", AgentState::Blocked),
+            ("Failed", AgentState::Blocked),
+            ("error: exit 1", AgentState::Blocked),
+            ("needs input", AgentState::Attention),
+            ("Needs Attention", AgentState::Attention),
+            ("review", AgentState::Attention),
+            ("permission request", AgentState::Attention),
+            ("question", AgentState::Attention),
+            ("waiting", AgentState::Attention),
+            ("working", AgentState::Working),
+            ("Running", AgentState::Working),
+            ("done", AgentState::Done),
+            ("completed", AgentState::Done),
+            ("idle", AgentState::Idle),
+            ("unknown", AgentState::Unknown),
+            ("", AgentState::Unknown),
+        ] {
+            assert_eq!(AgentState::classify(status), expected, "{status:?}");
+        }
+    }
+
+    #[test]
+    fn agent_status_classify_prefers_more_urgent_state() {
+        assert_eq!(
+            AgentState::classify("blocked, waiting"),
+            AgentState::Blocked
+        );
+        assert_eq!(
+            AgentState::classify("waiting while running"),
+            AgentState::Attention
+        );
+        assert_eq!(AgentState::classify("work done"), AgentState::Working);
+    }
 
     #[test]
     fn provenance_includes_provider_identity_and_merged_sources_without_changing_kind() {

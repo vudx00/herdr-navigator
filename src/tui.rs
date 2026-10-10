@@ -21,7 +21,7 @@ use ratatui::{
 use crate::{
     app::App,
     keymap::{effective_bindings, Availability as KeyAvailability, Command},
-    model::{Entry, EntryAction, Source},
+    model::{AgentState, Entry, EntryAction, Source},
     picker::input::{
         self, ActionAvailability, ActivationIntent, Context as InputContext, Descriptor,
         Effect as InputEffect, Rows, SelectedAction, State as InputState, VimState, VisibleRegions,
@@ -753,30 +753,19 @@ fn draw_keybindings_help(f: &mut Frame, app: &App, input: &Descriptor, area: Rec
 /// Whether any row needs the spinner animated. Entries only change on refresh,
 /// so this is resolved there rather than on every 125 ms tick.
 pub(crate) fn has_working_entry(entries: &[Entry]) -> bool {
-    entries.iter().filter_map(entry_status).any(|status| {
-        let status = status.to_lowercase();
-        status.contains("work") || status.contains("run")
-    })
+    entries
+        .iter()
+        .filter_map(entry_status)
+        .any(|status| AgentState::classify(status) == AgentState::Working)
 }
 
 fn agent_status_color(theme: &Theme, status: &str) -> Color {
-    let status = status.to_lowercase();
-    if status.contains("block")
-        || status.contains("error")
-        || status.contains("fail")
-        || status.contains("attention")
-        || status.contains("request")
-        || status.contains("wait")
-    {
-        theme.red
-    } else if status.contains("work") || status.contains("run") {
-        theme.yellow
-    } else if status.contains("done") || status.contains("complete") {
-        theme.teal
-    } else if status.contains("idle") {
-        theme.green
-    } else {
-        theme.overlay0
+    match AgentState::classify(status) {
+        AgentState::Blocked | AgentState::Attention => theme.red,
+        AgentState::Working => theme.yellow,
+        AgentState::Done => theme.teal,
+        AgentState::Idle => theme.green,
+        AgentState::Unknown => theme.overlay0,
     }
 }
 
@@ -2821,6 +2810,7 @@ mod tests {
         let theme = Theme::load(false);
 
         assert_eq!(agent_status_color(&theme, "blocked"), theme.red);
+        assert_eq!(agent_status_color(&theme, "needs review"), theme.red);
         assert_eq!(agent_status_color(&theme, "working"), theme.yellow);
         assert_eq!(agent_status_color(&theme, "done"), theme.teal);
         assert_eq!(agent_status_color(&theme, "idle"), theme.green);

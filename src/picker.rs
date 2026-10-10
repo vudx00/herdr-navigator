@@ -10,7 +10,7 @@ mod tests;
 use crate::{
     actions::ResolvedAction,
     config::PickerConfig,
-    matcher::{Query, SearchMatcher},
+    matcher::{match_quality, Query, SearchMatcher},
     model::{
         DestinationKind, Entry, EntryIdentity, LiveIdentity, MachineKey, ObjectKind, ServerScope,
         Source,
@@ -432,15 +432,7 @@ fn best_field(
         .into_iter()
         .filter_map(|field| {
             let score = matcher.score(&field.text)?;
-            let quality = if field.text == plain {
-                3
-            } else if field.text.starts_with(plain) {
-                2
-            } else if field.text.contains(plain) {
-                1
-            } else {
-                0
-            };
+            let quality = match_quality(&field.text, plain);
             Some(FieldMatch {
                 class: field.class,
                 quality,
